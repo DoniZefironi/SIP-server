@@ -22,6 +22,9 @@ STORED_EVENTS = frozenset(
         "AgentConnect",
         "AgentComplete",
         "AgentRingNoAnswer",
+        # События сценария станции (UserEvent в extensions.conf): этап звонка, файл записи,
+        # файл сообщения. Имя — в поле UserEvent: SavtCall, SavtRecording, SavtMessage.
+        "UserEvent",
     }
 )
 

@@ -9,7 +9,9 @@
 ## Что уже есть
 
 - Подключение к станции по AMI (поток событий Asterisk, TCP-порт 5038) с переподключением при обрыве.
-- Таблица `call_events`: события звонков (новый канал, вызов, ответ, очередь, отбой).
+- Настройки станции в [asterisk/](asterisk/): сценарий, очереди, SIP, AMI и гайд по применению.
+- Таблица `call_events`: события звонков (новый канал, вызов, ответ, очередь, отбой)
+  и этапы сценария станции (`SavtCall`, `SavtRecording`, `SavtMessage`).
 - `GET /health` — состояние сервиса, базы и связи со станцией (200 или 503).
 - `GET /api/events?limit=50&linkedid=…` — последние события, для отладки.
 - Приведение номеров к виду `+375291234567`.
@@ -61,41 +63,21 @@ uv run ruff check .
 
 На реальной станции это ещё не проверялось.
 
-**1. Пользователь AMI.** В файле `/etc/asterisk/manager.conf` должно быть:
-
-```
-[general]
-enabled = yes
-bindaddr = 127.0.0.1
-port = 5038
-
-[telephony]
-secret = ПАРОЛЬ_AMI
-deny = 0.0.0.0/0.0.0.0
-permit = 127.0.0.1/255.255.255.255
-read = call,agent
-write =
-```
-
-`bindaddr = 127.0.0.1` — интерфейс доступен только с самой машины. `read = call,agent` — сервис
-получает события звонков и очередей. `write` пустой — управлять станцией сервис пока не может.
-Пароль придумать случайный, например командой `openssl rand -hex 16`. Применить:
-
-```
-sudo asterisk -rx "manager reload"
-```
+**1. Станция.** Сначала применить настройки Asterisk по [asterisk/GUIDE.md](asterisk/GUIDE.md):
+там же скачивается репозиторий в `/opt/savt-telephony` и создаётся пользователь AMI `telephony`
+(пароль — в `/root/ami-secret.txt`).
 
 **2. Сервис.**
 
 ```
-sudo git clone https://github.com/DoniZefironi/SIP-server.git /opt/savt-telephony
 cd /opt/savt-telephony
 sudo cp .env.example .env
+sudo cat /root/ami-secret.txt
 sudo nano .env
 ```
 
-В `.env` задать `TELEPHONY_DB_PASSWORD` (свой случайный пароль) и `TELEPHONY_AMI_SECRET`
-(тот же пароль, что в `manager.conf`). Запуск:
+В `.env` задать `TELEPHONY_DB_PASSWORD` (свой случайный пароль, например из
+`openssl rand -hex 16`) и `TELEPHONY_AMI_SECRET` (пароль, который показала вторая команда). Запуск:
 
 ```
 sudo docker compose up -d --build
