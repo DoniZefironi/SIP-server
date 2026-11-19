@@ -11,6 +11,8 @@ from app.api import calls, events, health
 from app.config import get_settings
 from app.db.session import engine
 from app.services.maintenance import run_maintenance
+from app.services.recording_queue import run_recording_queue
+from app.services.transcription import run_transcription
 
 
 @asynccontextmanager
@@ -40,14 +42,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.maintenance_enabled:
         maintenance_task = asyncio.create_task(run_maintenance(settings), name="maintenance")
 
-    yield
+    recording_task: asyncio.Task[None] | None = None
+    if settings.recording_queue_enabled:
+        recording_task = asyncio.create_task(run_recording_queue(settings), name="recording-queue")
 
-    for task in (ami_task, maintenance_task):
-        if task is not None:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-    await engine.dispose()
+    transcription_task: asyncio.Task[None] | None = None
+    if settings.speechkit_enabled:
+        transcription_task = asyncio.create_task(run_transcription(settings), name="transcription")
+
+    try:
+        yield
+    finally:
+        for task in (ami_task, maintenance_task, recording_task, transcription_task):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        await engine.dispose()
 
 
 app = FastAPI(title="Телефония SAVT", version="0.1.0", lifespan=lifespan)

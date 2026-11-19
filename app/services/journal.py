@@ -23,7 +23,7 @@ class Outcome(StrEnum):
     BLOCKED = "blocked"
 
 
-_MESSAGE_OUTCOMES = {
+OUTCOME_BY_MESSAGE_REASON = {
     "afterhours": Outcome.MESSAGE_AFTERHOURS,
     "queue_full": Outcome.MESSAGE_QUEUE_FULL,
     "no_answer": Outcome.MESSAGE_NO_ANSWER,
@@ -85,7 +85,7 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
                     call.ring_target = message.get("Target")
                 case "SavtMessage":
                     call.message_file = message.get("File")
-                    call.outcome = _MESSAGE_OUTCOMES.get(
+                    call.outcome = OUTCOME_BY_MESSAGE_REASON.get(
                         call.message_reason or "no_answer", Outcome.MESSAGE_NO_ANSWER
                     )
                 case _:

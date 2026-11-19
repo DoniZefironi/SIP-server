@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     events_retention_days: int = 90
     maintenance_enabled: bool = True
     maintenance_interval: float = 3600.0
+    recording_queue_enabled: bool = True
+    speechkit_enabled: bool = False
+    speechkit_api_key: SecretStr = SecretStr("")
 
     @property
     def database_url(self) -> URL:

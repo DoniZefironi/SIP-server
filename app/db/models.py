@@ -1,6 +1,19 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Identity, Integer, SmallInteger, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -59,3 +72,32 @@ class Call(Base):
     # Начало пути записи разговора: к нему добавляются .wav, -client.wav, -staff.wav.
     recording: Mapped[str | None] = mapped_column(String(512))
     message_file: Mapped[str | None] = mapped_column(String(512))
+
+
+class RecordingJob(Base):
+    """Готовая запись, поставленная в очередь обработки."""
+
+    __tablename__ = "recording_jobs"
+    __table_args__ = (
+        CheckConstraint("audio_kind IN ('mix', 'message')", name="ck_recording_jobs_audio_kind"),
+        CheckConstraint(
+            "transcription_status IN "
+            "('pending', 'submitting', 'processing', 'completed', 'failed')",
+            name="ck_recording_jobs_transcription_status",
+        ),
+        Index("ix_recording_jobs_transcription_due", "transcription_status", "next_attempt_at"),
+    )
+
+    call_id: Mapped[int] = mapped_column(
+        ForeignKey("calls.id", ondelete="CASCADE"), primary_key=True
+    )
+    audio_kind: Mapped[str] = mapped_column(String(7))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    transcription_status: Mapped[str] = mapped_column(String(10), server_default="pending")
+    operation_id: Mapped[str | None] = mapped_column(String(255))
+    transcript: Mapped[str | None] = mapped_column(Text)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(255))
