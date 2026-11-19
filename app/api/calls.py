@@ -9,11 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Call, RecordingJob
+from app.db.models import BitrixDelivery, Call, RecordingJob
 from app.db.session import get_session
 from app.services.journal import Outcome
 from app.services.phones import normalize_phone
 from app.services.recordings import AudioKind, ready_recording
+from app.services.yandexgpt import CallSummary
 
 router = APIRouter(tags=["calls"])
 
@@ -36,9 +37,23 @@ class CallOut(BaseModel):
     has_message: bool
 
 
+class DeliveryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    destination: str
+    target_id: int
+    status: str
+    external_id: int | None
+    last_error: str | None
+
+
 class CallDetail(CallOut):
     transcription_status: str | None
     transcript: str | None
+    summary_status: str | None
+    summary: CallSummary | None
+    bitrix_routing_status: str | None
+    bitrix_deliveries: list[DeliveryOut]
 
 
 class CallPage(BaseModel):
@@ -98,11 +113,24 @@ async def get_call(
     if call is None:
         raise HTTPException(404, "звонок не найден")
     job = await session.get(RecordingJob, call_id)
+    deliveries = []
+    if job is not None:
+        deliveries = (
+            await session.scalars(
+                select(BitrixDelivery)
+                .where(BitrixDelivery.call_id == call_id)
+                .order_by(BitrixDelivery.destination, BitrixDelivery.target_id)
+            )
+        ).all()
     details = await run_in_threadpool(_to_out, call)
     return CallDetail(
         **details.model_dump(),
         transcription_status=job.transcription_status if job is not None else None,
         transcript=job.transcript if job is not None else None,
+        summary_status=job.summary_status if job is not None else None,
+        summary=job.summary if job is not None else None,
+        bitrix_routing_status=job.bitrix_routing_status if job is not None else None,
+        bitrix_deliveries=[DeliveryOut.model_validate(delivery) for delivery in deliveries],
     )
 
 

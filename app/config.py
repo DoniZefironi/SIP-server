@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     recording_queue_enabled: bool = True
     speechkit_enabled: bool = False
     speechkit_api_key: SecretStr = SecretStr("")
+    yandexgpt_enabled: bool = False
+    yandexgpt_folder_id: str = ""
+    yandexgpt_api_key: SecretStr = SecretStr("")
+    bitrix_enabled: bool = False
+    bitrix_webhook_url: SecretStr = SecretStr("")
+    bitrix_deal_code_field: str = "UF_CRM_1730705809359"
+    bitrix_sector_recipients: dict[int, int] = {}
+    bitrix_default_recipient: int | None = None
 
     @property
     def database_url(self) -> URL:

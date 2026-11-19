@@ -10,8 +10,10 @@ from app.ami.events import store_event
 from app.api import calls, events, health
 from app.config import get_settings
 from app.db.session import engine
+from app.services.bitrix_delivery import run_bitrix_delivery
 from app.services.maintenance import run_maintenance
 from app.services.recording_queue import run_recording_queue
+from app.services.summarization import run_summarization
 from app.services.transcription import run_transcription
 
 
@@ -50,10 +52,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.speechkit_enabled:
         transcription_task = asyncio.create_task(run_transcription(settings), name="transcription")
 
+    summary_task: asyncio.Task[None] | None = None
+    if settings.yandexgpt_enabled:
+        summary_task = asyncio.create_task(run_summarization(settings), name="summarization")
+
+    bitrix_task: asyncio.Task[None] | None = None
+    if settings.bitrix_enabled:
+        bitrix_task = asyncio.create_task(run_bitrix_delivery(settings), name="bitrix-delivery")
+
     try:
         yield
     finally:
-        for task in (ami_task, maintenance_task, recording_task, transcription_task):
+        for task in (
+            ami_task,
+            maintenance_task,
+            recording_task,
+            transcription_task,
+            summary_task,
+            bitrix_task,
+        ):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):

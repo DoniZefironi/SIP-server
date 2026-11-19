@@ -86,6 +86,16 @@ class RecordingJob(Base):
             name="ck_recording_jobs_transcription_status",
         ),
         Index("ix_recording_jobs_transcription_due", "transcription_status", "next_attempt_at"),
+        CheckConstraint(
+            "summary_status IN ('pending', 'completed', 'skipped', 'failed')",
+            name="ck_recording_jobs_summary_status",
+        ),
+        Index("ix_recording_jobs_summary_due", "summary_status", "summary_next_attempt_at"),
+        CheckConstraint(
+            "bitrix_routing_status IN ('pending', 'resolved', 'skipped', 'failed')",
+            name="ck_recording_jobs_bitrix_routing_status",
+        ),
+        Index("ix_recording_jobs_bitrix_route_due", "bitrix_routing_status", "bitrix_route_due_at"),
     )
 
     call_id: Mapped[int] = mapped_column(
@@ -101,3 +111,46 @@ class RecordingJob(Base):
     )
     retry_count: Mapped[int] = mapped_column(Integer, server_default="0")
     last_error: Mapped[str | None] = mapped_column(String(255))
+    summary_status: Mapped[str] = mapped_column(String(10), server_default="pending")
+    summary: Mapped[dict[str, str | list[str] | None] | None] = mapped_column(JSONB)
+    summary_next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    summary_retry_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    summary_error: Mapped[str | None] = mapped_column(String(255))
+    bitrix_routing_status: Mapped[str] = mapped_column(String(8), server_default="pending")
+    bitrix_route_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    bitrix_route_attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+
+
+class BitrixDelivery(Base):
+    """Доставка одной выжимки в карточку CRM или личный чат."""
+
+    __tablename__ = "bitrix_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "destination IN ('deal', 'contact', 'company', 'chat')",
+            name="ck_bitrix_deliveries_destination",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'sending', 'sent', 'failed', 'uncertain')",
+            name="ck_bitrix_deliveries_status",
+        ),
+        Index("ix_bitrix_deliveries_due", "status", "next_attempt_at"),
+    )
+
+    call_id: Mapped[int] = mapped_column(
+        ForeignKey("recording_jobs.call_id", ondelete="CASCADE"), primary_key=True
+    )
+    destination: Mapped[str] = mapped_column(String(7), primary_key=True)
+    target_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String(9), server_default="pending")
+    external_id: Mapped[int | None] = mapped_column(BigInteger)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(255))
+    caller_details: Mapped[str | None] = mapped_column(Text)
