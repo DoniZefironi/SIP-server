@@ -14,9 +14,14 @@
   и этапы сценария станции (`SavtCall`, `SavtRecording`, `SavtMessage`).
 - `GET /health` — состояние сервиса, базы и связи со станцией (200 или 503).
 - `GET /api/events?limit=50&linkedid=…` — последние события, для отладки.
+- Журнал звонков: `GET /api/calls` (фильтры `sector`, `outcome`, `caller`, `date_from`, `date_to`),
+  `GET /api/calls/{id}`, записи `GET /api/calls/{id}/audio/{mix|client|staff|message}`.
+- Обслуживание раз в час: удаление пустых записей, записей старше года
+  (`TELEPHONY_RECORDINGS_RETENTION_DAYS`) и сырых событий старше 90 дней.
 - Приведение номеров к виду `+375291234567`.
 
-Журнала звонков, определения звонящего, Bitrix и управления настройками станции пока нет.
+Определения звонящего, Bitrix, текста и выжимки, управления настройками станции и защиты API
+пока нет: API доступен только с самой машины.
 
 ## Устройство
 
@@ -28,7 +33,7 @@ app/
   ami/events.py    какие события сохраняем
   api/             HTTP-эндпоинты
   db/              модели и подключение к PostgreSQL
-  services/        нормализация номеров
+  services/        журнал звонков, номера, обслуживание
 alembic/           миграции базы
 tests/             тесты (станция в них поддельная, Asterisk не нужен)
 ```
@@ -76,8 +81,13 @@ sudo cat /root/ami-secret.txt
 sudo nano .env
 ```
 
-В `.env` задать `TELEPHONY_DB_PASSWORD` (свой случайный пароль, например из
-`openssl rand -hex 16`) и `TELEPHONY_AMI_SECRET` (пароль, который показала вторая команда). Запуск:
+В `.env` задать:
+- `TELEPHONY_DB_PASSWORD` — свой случайный пароль, например из `openssl rand -hex 16`;
+- `TELEPHONY_AMI_SECRET` — пароль, который показала команда `sudo cat /root/ami-secret.txt`;
+- `TELEPHONY_ASTERISK_GID` — число из команды `getent group asterisk | cut -d: -f3`
+  (сервис входит в группу `asterisk`, чтобы читать и чистить записи в `/srv/recordings`).
+
+Запуск:
 
 ```
 sudo docker compose up -d --build

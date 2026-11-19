@@ -4,3 +4,4 @@ import os
 os.environ["TELEPHONY_AMI_ENABLED"] = "false"
 os.environ["TELEPHONY_DB_HOST"] = "127.0.0.1"
 os.environ["TELEPHONY_DB_PORT"] = "1"
+os.environ["TELEPHONY_MAINTENANCE_ENABLED"] = "false"

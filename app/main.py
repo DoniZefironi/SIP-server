@@ -7,9 +7,10 @@ from fastapi import FastAPI
 
 from app.ami.client import AmiClient
 from app.ami.events import store_event
-from app.api import events, health
+from app.api import calls, events, health
 from app.config import get_settings
 from app.db.session import engine
+from app.services.maintenance import run_maintenance
 
 
 @asynccontextmanager
@@ -35,15 +36,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.ami = client
         ami_task = asyncio.create_task(client.run(), name="ami")
 
+    maintenance_task: asyncio.Task[None] | None = None
+    if settings.maintenance_enabled:
+        maintenance_task = asyncio.create_task(run_maintenance(settings), name="maintenance")
+
     yield
 
-    if ami_task is not None:
-        ami_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await ami_task
+    for task in (ami_task, maintenance_task):
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
     await engine.dispose()
 
 
 app = FastAPI(title="Телефония SAVT", version="0.1.0", lifespan=lifespan)
 app.include_router(health.router)
 app.include_router(events.router, prefix="/api")
+app.include_router(calls.router, prefix="/api")

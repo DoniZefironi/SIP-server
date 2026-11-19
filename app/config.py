@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
@@ -22,6 +23,13 @@ class Settings(BaseSettings):
     ami_secret: str = ""
     ami_reconnect_delay: float = 5.0
     ami_ping_interval: float = 20.0
+
+    # Записи разговоров и сообщения (их пишет Asterisk, сервис читает и чистит).
+    recordings_dir: Path = Path("/srv/recordings")
+    recordings_retention_days: int = 365
+    events_retention_days: int = 90
+    maintenance_enabled: bool = True
+    maintenance_interval: float = 3600.0
 
     @property
     def database_url(self) -> URL:

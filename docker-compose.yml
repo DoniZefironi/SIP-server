@@ -25,6 +25,12 @@ services:
     # Сеть хоста: Asterisk стоит на самой машине и отдаёт AMI только на 127.0.0.1.
     # Сервис слушает 127.0.0.1:8000, наружу его позже выпустит nginx.
     network_mode: host
+    # Записи пишет Asterisk (группа asterisk). Сервис читает их для фронта и удаляет
+    # пустые и просроченные, поэтому входит в эту группу.
+    group_add:
+      - "${TELEPHONY_ASTERISK_GID:-65534}"
+    volumes:
+      - "${TELEPHONY_RECORDINGS_DIR:-/srv/recordings}:/srv/recordings"
     depends_on:
       db:
         condition: service_healthy
