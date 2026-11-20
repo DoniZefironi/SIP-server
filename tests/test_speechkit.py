@@ -4,7 +4,7 @@ from base64 import b64decode, b64encode
 import httpx
 import pytest
 
-from app.services.speechkit import SpeechKit, SpeechKitError
+from app.services.speechkit import SpeechKit, SpeechKitError, _transcript
 
 
 async def test_submit_wav_asynchronously() -> None:
@@ -52,6 +52,48 @@ async def test_poll_uses_one_operation_and_merges_final_phrases() -> None:
         client = SpeechKit(http)
         assert await client.poll("fake-operation") is None
         assert await client.poll("fake-operation") == "Заявка 2. Сроки"
+
+
+def test_dialogue_orders_phrases_with_colliding_channel_indices() -> None:
+    chunks = [
+        {
+            "channelTag": "1",
+            "audioCursors": {"finalIndex": "0"},
+            "final": {"alternatives": [{"startTimeMs": "3500", "text": "Проверю сроки."}]},
+        },
+        {
+            "audioCursors": {"finalIndex": "0"},
+            "final": {
+                "channelTag": "0",
+                "alternatives": [{"startTimeMs": "1200", "text": "когда"}],
+            },
+        },
+        {
+            "finalRefinement": {
+                "finalIndex": "0",
+                "normalizedText": {"channelTag": "0", "alternatives": [{"text": "Когда?"}]},
+            }
+        },
+    ]
+    response = "\n".join(json.dumps({"result": chunk}) for chunk in chunks)
+
+    assert _transcript(response, dialogue=True) == (
+        "[00:01] Клиент: Когда?\n[00:03] Сотрудник: Проверю сроки."
+    )
+
+
+def test_single_speaking_side_keeps_its_label_in_dialogue() -> None:
+    response = json.dumps(
+        {
+            "result": {
+                "channelTag": "0",
+                "final": {"alternatives": [{"text": "Алло."}]},
+            }
+        }
+    )
+
+    assert _transcript(response, dialogue=True) == "Клиент: Алло."
+    assert _transcript(response) == "Алло."
 
 
 @pytest.mark.parametrize(("status", "retryable"), [(429, True), (503, False), (403, False)])

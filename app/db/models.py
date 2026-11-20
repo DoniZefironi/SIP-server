@@ -106,6 +106,7 @@ class RecordingJob(Base):
     transcription_status: Mapped[str] = mapped_column(String(10), server_default="pending")
     operation_id: Mapped[str | None] = mapped_column(String(255))
     transcript: Mapped[str | None] = mapped_column(Text)
+    dialogue_channels: Mapped[bool] = mapped_column(Boolean, server_default="false")
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

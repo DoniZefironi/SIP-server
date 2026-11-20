@@ -7,6 +7,7 @@ import httpx
 _STT = "https://stt.api.cloud.yandex.net/stt/v3"
 _OPERATIONS = "https://operation.api.cloud.yandex.net/operations"
 _WHITESPACE = re.compile(r"\s*")
+_SPEAKERS = {"0": "Клиент", "1": "Сотрудник"}
 
 
 class SpeechKitError(Exception):
@@ -15,13 +16,13 @@ class SpeechKitError(Exception):
         self.retryable = retryable
 
 
-def _transcript(text: str) -> str:
+def _transcript(text: str, *, dialogue: bool = False) -> str:
     """Собрать финальные фразы из потока JSON, выбирая нормализованный вариант."""
     if not text.strip():
         raise SpeechKitError("SpeechKit вернул пустой ответ при получении текста", retryable=True)
     decoder = json.JSONDecoder()
-    phrases: dict[int, str] = {}
-    refined: dict[int, str] = {}
+    phrases: dict[tuple[str, int], tuple[int | None, str]] = {}
+    refined: dict[tuple[str, int], tuple[int | None, str]] = {}
     cursor = 0
     try:
         while (cursor := _WHITESPACE.match(text, cursor).end()) < len(text):
@@ -31,19 +32,53 @@ def _transcript(text: str) -> str:
             result = chunk["result"]
             if "final" in result:
                 index = int(result.get("audioCursors", {}).get("finalIndex", len(phrases)))
-                alternatives = result["final"].get("alternatives", [])
-                if alternatives:
-                    phrases[index] = alternatives[0]["text"].strip()
+                _store_phrase(phrases, result, result["final"], index, dialogue)
             if "finalRefinement" in result:
                 refinement = result["finalRefinement"]
-                alternatives = refinement.get("normalizedText", {}).get("alternatives", [])
-                if alternatives:
-                    refined[int(refinement["finalIndex"])] = alternatives[0]["text"].strip()
+                if normalized := refinement.get("normalizedText"):
+                    _store_phrase(
+                        refined, result, normalized, int(refinement["finalIndex"]), dialogue
+                    )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise SpeechKitError("SpeechKit вернул неожиданный формат расшифровки") from exc
 
-    phrases.update(refined)
-    return " ".join(phrases[index] for index in sorted(phrases) if phrases[index])
+    for key, (time_ms, phrase) in refined.items():
+        original_time, _ = phrases.get(key, (None, ""))
+        phrases[key] = (original_time if original_time is not None else time_ms, phrase)
+    if not dialogue:
+        return " ".join(phrases[key][1] for key in sorted(phrases) if phrases[key][1])
+
+    def chronological(key: tuple[str, int]) -> tuple[bool, int, int, str]:
+        time_ms, _ = phrases[key]
+        return time_ms is None, time_ms or 0, key[1], key[0]
+
+    lines = []
+    for key in sorted(phrases, key=chronological):
+        time_ms, phrase = phrases[key]
+        if not phrase:
+            continue
+        speaker = _SPEAKERS.get(key[0], "Собеседник")
+        prefix = ""
+        if time_ms is not None:
+            minutes, seconds = divmod(time_ms // 1000, 60)
+            prefix = f"[{minutes:02d}:{seconds:02d}] "
+        lines.append(f"{prefix}{speaker}: {phrase}")
+    return "\n".join(lines)
+
+
+def _store_phrase(phrases: dict, result: dict, update: dict, index: int, dialogue: bool) -> None:
+    alternatives = update.get("alternatives")
+    if not alternatives:
+        return
+    alternative = alternatives[0]
+    time_ms = alternative.get("startTimeMs")
+    if time_ms is None and (words := alternative.get("words")):
+        time_ms = words[0].get("startTimeMs")
+    channel = update.get("channelTag", result.get("channelTag", "0")) if dialogue else ""
+    phrases[str(channel), index] = (
+        int(time_ms) if time_ms is not None else None,
+        alternative["text"].strip(),
+    )
 
 
 class SpeechKit:
@@ -91,7 +126,7 @@ class SpeechKit:
             raise SpeechKitError("SpeechKit не вернул идентификатор отправленной операции") from exc
         return operation_id
 
-    async def poll(self, operation_id: str) -> str | None:
+    async def poll(self, operation_id: str, *, dialogue: bool = False) -> str | None:
         response = await self._request("GET", f"{_OPERATIONS}/{quote(operation_id, safe='')}")
         try:
             operation = response.json()
@@ -108,4 +143,4 @@ class SpeechKit:
         response = await self._request(
             "GET", f"{_STT}/getRecognition", params={"operation_id": operation_id}
         )
-        return _transcript(response.text)
+        return _transcript(response.text, dialogue=dialogue)

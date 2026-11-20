@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import wave
 from base64 import b64encode
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -11,7 +12,7 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db.models import Call, RecordingJob
 from app.db.session import SessionLocal
-from app.services.recordings import ready_recording
+from app.services.recordings import ready_recording, stereo_wav
 from app.services.speechkit import SpeechKit, SpeechKitError
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,18 @@ class Status(StrEnum):
     FAILED = "failed"
 
 
-def _wav_content(call: Call, kind: str, root: Path) -> str:
+def _wav_content(call: Call, kind: str, root: Path) -> tuple[str, bool]:
+    if kind == "mix":
+        left = ready_recording(call, "client", root)
+        right = ready_recording(call, "staff", root)
+        if left is not None and right is not None:
+            try:
+                stereo = stereo_wav(left, right, _MAX_WAV_BYTES)
+            except (OSError, EOFError, wave.Error):
+                stereo = None
+            if stereo is not None:
+                return b64encode(stereo).decode("ascii"), True
+
     path = ready_recording(call, "message" if kind == "message" else "mix", root)
     if path is None:
         raise SpeechKitError("Запись недоступна", retryable=True)
@@ -44,7 +56,7 @@ def _wav_content(call: Call, kind: str, root: Path) -> str:
         raise SpeechKitError("Запись недоступна", retryable=True) from exc
     if len(data) > _MAX_WAV_BYTES:
         raise SpeechKitError("Запись превышает лимит SpeechKit (60 МБ)")
-    return b64encode(data).decode("ascii")
+    return b64encode(data).decode("ascii"), False
 
 
 def _fail_or_retry(job: RecordingJob, error: SpeechKitError) -> None:
@@ -90,7 +102,7 @@ async def _poll(job: RecordingJob, client: SpeechKit) -> None:
         if not job.operation_id:
             raise SpeechKitError("Отсутствует идентификатор операции SpeechKit")
         async with asyncio.timeout(_REQUEST_TIMEOUT):
-            transcript = await client.poll(job.operation_id)
+            transcript = await client.poll(job.operation_id, dialogue=job.dialogue_channels)
     except TimeoutError:
         _fail_or_retry(job, SpeechKitError("Истекло время ожидания SpeechKit", retryable=True))
         return
@@ -134,7 +146,7 @@ async def transcribe_next(settings: Settings, client: SpeechKit) -> bool:
         if call is None:
             return True
         try:
-            content = await asyncio.to_thread(
+            content, dialogue_channels = await asyncio.to_thread(
                 _wav_content, call, job.audio_kind, settings.recordings_dir
             )
         except SpeechKitError as error:
@@ -144,6 +156,7 @@ async def transcribe_next(settings: Settings, client: SpeechKit) -> bool:
         # Сохраняем факт отправки до вызова платного API. Если ответ потеряется,
         # повторная отправка может создать вторую операцию для той же записи.
         job.transcription_status = Status.SUBMITTING
+        job.dialogue_channels = dialogue_channels
         job.next_attempt_at = datetime.now(UTC) + _SUBMISSION_WINDOW
         call_id = job.call_id
 
