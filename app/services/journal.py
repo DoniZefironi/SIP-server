@@ -1,8 +1,8 @@
 """Сборка журнала звонков из событий станции.
 
 Звонок — это все каналы с общим Linkedid. Строку журнала создаёт событие сценария
-SavtCall (Stage: start или blocked), остальные события её дополняют. Звонки без этих событий
-(внутренние, с номера на номер) в журнал не попадают.
+SavtCall с этапом start, blocked или outgoing_start. Остальные события дополняют запись.
+Внутренние звонки с номера на номер в журнал не попадают.
 """
 
 from datetime import datetime
@@ -13,6 +13,11 @@ from app.db.models import Call
 from app.services.phones import normalize_phone
 
 
+class Direction(StrEnum):
+    INCOMING = "incoming"
+    OUTGOING = "outgoing"
+
+
 class Outcome(StrEnum):
     ANSWERED = "answered"
     MESSAGE_AFTERHOURS = "message_afterhours"
@@ -21,12 +26,27 @@ class Outcome(StrEnum):
     ABANDONED_MENU = "abandoned_menu"
     ABANDONED_QUEUE = "abandoned_queue"
     BLOCKED = "blocked"
+    OUTGOING_NO_ANSWER = "outgoing_no_answer"
+    OUTGOING_BUSY = "outgoing_busy"
+    OUTGOING_CANCELLED = "outgoing_cancelled"
+    OUTGOING_FAILED = "outgoing_failed"
 
 
 OUTCOME_BY_MESSAGE_REASON = {
     "afterhours": Outcome.MESSAGE_AFTERHOURS,
     "queue_full": Outcome.MESSAGE_QUEUE_FULL,
     "no_answer": Outcome.MESSAGE_NO_ANSWER,
+}
+MISSED_OUTCOMES = (
+    Outcome.ABANDONED_MENU,
+    Outcome.ABANDONED_QUEUE,
+    *OUTCOME_BY_MESSAGE_REASON.values(),
+)
+OUTCOME_BY_DIAL_STATUS = {
+    "ANSWER": Outcome.ANSWERED,
+    "NOANSWER": Outcome.OUTGOING_NO_ANSWER,
+    "BUSY": Outcome.OUTGOING_BUSY,
+    "CANCEL": Outcome.OUTGOING_CANCELLED,
 }
 
 
@@ -39,12 +59,16 @@ def _int(value: str | None) -> int | None:
 
 def _new_call(message: Message, now: datetime) -> Call:
     number = message.get("Number")
+    outgoing = message.get("Stage") == "outgoing_start"
     return Call(
         linkedid=message["Linkedid"],
         started_at=now,
         caller_raw=number,
         caller=normalize_phone(number),
         sector_by_default=False,
+        direction=Direction.OUTGOING if outgoing else Direction.INCOMING,
+        initiated_by=(message.get("Staff") or None) if outgoing else None,
+        sector=_int(message.get("Sector")) if outgoing else None,
     )
 
 
@@ -54,7 +78,7 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
 
     if event == "UserEvent" and message.get("UserEvent") == "SavtCall":
         stage = message.get("Stage")
-        if call is None and stage in ("start", "blocked"):
+        if call is None and stage in ("start", "blocked", "outgoing_start"):
             call = _new_call(message, now)
         if call is None:
             return None
@@ -102,6 +126,20 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
         case "QueueCallerAbandon":
             call.wait_seconds = _int(message.get("HoldTime"))
             call.outcome = call.outcome or Outcome.ABANDONED_QUEUE
+        case "DialEnd" if call.direction == Direction.OUTGOING:
+            if (
+                message.get("Uniqueid") != call.linkedid
+                or call.ended_at is not None
+                or call.answered_at is not None
+                or message.get("DialStatus") == "FORWARD"
+            ):
+                return None
+            call.outcome = OUTCOME_BY_DIAL_STATUS.get(
+                message.get("DialStatus", ""), Outcome.OUTGOING_FAILED
+            )
+            call.wait_seconds = max(0, int((now - call.started_at).total_seconds()))
+            if call.outcome == Outcome.ANSWERED:
+                call.answered_at = now
         case "Hangup":
             # Звонок кончился, когда положен первый канал (у него Uniqueid совпадает
             # с Linkedid). Отбои каналов к телефонам сектора звонок не завершают.
@@ -111,6 +149,9 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
             if call.outcome is None:
                 if call.answered_at is not None:
                     call.outcome = Outcome.ANSWERED
+                elif call.direction == Direction.OUTGOING:
+                    call.outcome = Outcome.OUTGOING_FAILED
+                    call.wait_seconds = max(0, int((now - call.started_at).total_seconds()))
                 elif call.sector is None:
                     call.outcome = Outcome.ABANDONED_MENU
                 else:

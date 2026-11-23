@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     bitrix_deal_code_field: str = "UF_CRM_1730705809359"
     bitrix_sector_recipients: dict[int, int] = {}
     bitrix_default_recipient: int | None = None
+    sector_names: dict[int, str] = {
+        1: "Коммерческий",
+        2: "Наладка",
+        3: "Разработка ПО",
+        4: "Проектирование",
+        5: "Бухгалтерия",
+    }
+    sector_numbers: dict[int, str] = {}
+    employee_names: dict[str, str] = {}
 
     @property
     def database_url(self) -> URL:

@@ -43,13 +43,18 @@ class Call(Base):
     """Звонок с линии в журнале. Собирается из событий станции (app/services/journal.py)."""
 
     __tablename__ = "calls"
+    __table_args__ = (
+        CheckConstraint("direction IN ('incoming', 'outgoing')", name="ck_calls_direction"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     linkedid: Mapped[str] = mapped_column(String(64), unique=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    direction: Mapped[str] = mapped_column(String(8), server_default="incoming")
+    initiated_by: Mapped[str | None] = mapped_column(String(255))
 
-    # Номер как его передала станция и он же в виде +375…; None — скрыт или не номер.
+    # Номер клиента. Для исходящего звонка это номер назначения.
     caller_raw: Mapped[str | None] = mapped_column(String(64))
     caller: Mapped[str | None] = mapped_column(String(20), index=True)
 

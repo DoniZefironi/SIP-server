@@ -1,0 +1,21 @@
+name: savt-telephony-frontend
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: telephony_demo
+      POSTGRES_USER: telephony_demo
+      POSTGRES_PASSWORD: telephony_demo_local
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - frontend-demo-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telephony_demo -d telephony_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  frontend-demo-data:

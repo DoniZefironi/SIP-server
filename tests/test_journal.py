@@ -2,8 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.db.models import Call
-from app.services.journal import Outcome, apply_event
+from app.services.journal import Direction, Outcome, apply_event
 
 LINKED = "1794907850.6"
 T0 = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
@@ -44,6 +46,7 @@ def test_answered_call() -> None:
     assert call.caller == "+375291234567"
     assert call.caller_raw == "80291234567"
     assert call.sector == 2
+    assert call.direction == Direction.INCOMING
     assert call.outcome == Outcome.ANSWERED
     assert call.answered_by == "PJSIP/102"
     assert call.wait_seconds == 12
@@ -128,3 +131,55 @@ def test_events_without_start_are_ignored() -> None:
     assert apply_event(None, hangup(), T0) is None
     assert apply_event(None, stage("sector", Sector="1"), T0) is None
     assert apply_event(None, user("SavtRecording", File="x"), T0) is None
+
+
+def dial_end(status: str, uniqueid: str = LINKED) -> dict[str, str]:
+    return {"Event": "DialEnd", "Linkedid": LINKED, "Uniqueid": uniqueid, "DialStatus": status}
+
+
+def test_outgoing_call_tracks_client_and_initiator() -> None:
+    call = run(
+        stage("outgoing_start", Number="+375291234567", Staff="PJSIP/104", Sector="4"),
+        user("SavtRecording", File="/srv/recordings/calls/x"),
+        dial_end("ANSWER", uniqueid="1794907850.9"),
+        dial_end("ANSWER"),
+        hangup(),
+    )
+    assert call is not None
+    assert call.direction == Direction.OUTGOING
+    assert call.caller == "+375291234567"
+    assert call.initiated_by == "PJSIP/104"
+    assert call.sector == 4
+    assert call.outcome == Outcome.ANSWERED
+    assert call.wait_seconds == 30
+    assert call.talk_seconds == 10
+    assert call.recording == "/srv/recordings/calls/x"
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [
+        ("BUSY", Outcome.OUTGOING_BUSY),
+        ("NOANSWER", Outcome.OUTGOING_NO_ANSWER),
+        ("CANCEL", Outcome.OUTGOING_CANCELLED),
+        ("CHANUNAVAIL", Outcome.OUTGOING_FAILED),
+    ],
+)
+def test_unanswered_outgoing_stays_outgoing(status: str, outcome: Outcome) -> None:
+    call = run(stage("outgoing_start", Number="+375291234567"), dial_end(status), hangup())
+    assert call is not None
+    assert call.direction == Direction.OUTGOING
+    assert call.outcome == outcome
+    assert call.talk_seconds is None
+
+
+def test_dial_to_employee_does_not_create_an_outgoing_call() -> None:
+    call = run(
+        stage("start", Number="+375291234567"),
+        stage("sector", Sector="4"),
+        dial_end("NOANSWER"),
+        hangup(),
+    )
+    assert call is not None
+    assert call.direction == Direction.INCOMING
+    assert call.outcome == Outcome.ABANDONED_QUEUE
