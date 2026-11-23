@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from app.ami.client import AmiClient
 from app.ami.events import store_event
-from app.api import calls, events, health
+from app.api import calls, events, health, statistics
 from app.config import get_settings
 from app.db.session import engine
 from app.services.bitrix_delivery import run_bitrix_delivery
@@ -82,3 +82,4 @@ app = FastAPI(title="Телефония SAVT", version="0.1.0", lifespan=lifespa
 app.include_router(health.router)
 app.include_router(events.router, prefix="/api")
 app.include_router(calls.router, prefix="/api")
+app.include_router(statistics.router, prefix="/api")

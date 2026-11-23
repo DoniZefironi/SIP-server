@@ -1,5 +1,4 @@
 from datetime import datetime
-from enum import StrEnum
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,35 +12,18 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.config import get_settings
 from app.db.models import BitrixDelivery, Call, RecordingJob
 from app.db.session import get_session
-from app.services.journal import MISSED_OUTCOMES, Direction, Outcome
-from app.services.phones import normalize_phone
+from app.services.call_history import (
+    TAB_CONDITIONS,
+    VOICEMAIL_LEFT,
+    CallTab,
+    call_count_columns,
+    history_conditions,
+)
+from app.services.journal import Direction, Outcome
 from app.services.recordings import AudioKind, ready_recording
 from app.services.yandexgpt import CallSummary
 
 router = APIRouter(tags=["calls"])
-
-
-class CallTab(StrEnum):
-    INCOMING = "incoming"
-    OUTGOING = "outgoing"
-    MISSED = "missed"
-
-
-_TAB_CONDITIONS = {
-    CallTab.INCOMING: (Call.direction == Direction.INCOMING) & (Call.outcome == Outcome.ANSWERED),
-    CallTab.OUTGOING: Call.direction == Direction.OUTGOING,
-    CallTab.MISSED: (
-        (Call.direction == Direction.INCOMING)
-        & Call.ended_at.is_not(None)
-        & Call.outcome.in_(MISSED_OUTCOMES)
-    ),
-}
-# Задание создаётся после проверки записанного WAV и остаётся после удаления файла.
-_VOICEMAIL_LEFT = (
-    select(RecordingJob.call_id)
-    .where(RecordingJob.call_id == Call.id, RecordingJob.audio_kind == "message")
-    .exists()
-)
 
 
 class CallOut(BaseModel):
@@ -130,16 +112,7 @@ def _history_conditions(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
 ) -> list[ColumnElement[bool]]:
-    conditions = []
-    if sector is not None:
-        conditions.append(Call.sector == sector)
-    if caller:
-        conditions.append(Call.caller == (normalize_phone(caller) or caller))
-    if date_from is not None:
-        conditions.append(Call.started_at >= date_from)
-    if date_to is not None:
-        conditions.append(Call.started_at < date_to)
-    return conditions
+    return history_conditions(sector=sector, caller=caller, date_from=date_from, date_to=date_to)
 
 
 @router.get("/calls")
@@ -157,15 +130,15 @@ async def list_calls(
         if tab not in (None, CallTab.MISSED):
             raise HTTPException(422, "Фильтр голосовых сообщений применяется к пропущенным")
         tab = CallTab.MISSED
-        conditions.append(_VOICEMAIL_LEFT if voicemail else ~_VOICEMAIL_LEFT)
+        conditions.append(VOICEMAIL_LEFT if voicemail else ~VOICEMAIL_LEFT)
     if tab is not None:
-        conditions.append(_TAB_CONDITIONS[tab])
+        conditions.append(TAB_CONDITIONS[tab])
     if outcome is not None:
         conditions.append(Call.outcome == outcome)
 
     total = await session.scalar(select(func.count()).select_from(Call).where(*conditions))
     rows = await session.execute(
-        select(Call, _VOICEMAIL_LEFT)
+        select(Call, VOICEMAIL_LEFT)
         .where(*conditions)
         .order_by(Call.id.desc())
         .limit(limit)
@@ -184,18 +157,8 @@ async def count_calls(
     conditions: Annotated[list[ColumnElement[bool]], Depends(_history_conditions)],
 ) -> CallCounts:
     """Счётчики вкладок за выбранный период с учётом отдела и номера клиента."""
-    missed = _TAB_CONDITIONS[CallTab.MISSED]
     result = await session.execute(
-        select(
-            *(
-                func.count().filter(condition).label(tab.value)
-                for tab, condition in _TAB_CONDITIONS.items()
-            ),
-            func.count().filter(missed, _VOICEMAIL_LEFT).label("missed_with_voicemail"),
-            func.count().filter(missed, ~_VOICEMAIL_LEFT).label("missed_without_voicemail"),
-        )
-        .select_from(Call)
-        .where(*conditions)
+        select(*call_count_columns()).select_from(Call).where(*conditions)
     )
     return CallCounts.model_validate(result.mappings().one())
 
