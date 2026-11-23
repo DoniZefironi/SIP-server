@@ -112,6 +112,28 @@ async def test_login_and_event_delivery() -> None:
         assert client.connected
 
 
+async def test_list_action_collects_only_matching_events() -> None:
+    async def script(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await accept_login(reader, writer)
+        request = await read_action(reader)
+        writer.write(reply(request, Response="Success", EventList="start"))
+        writer.write(reply(request, Event="DBGetResponse", Val="routes"))
+        writer.write(encode_action({"Event": "Hangup", "Linkedid": "1.1"}))
+        writer.write(reply(request, Event="DBGetComplete", EventList="Complete"))
+        await answer_pings(reader, writer)
+
+    events: list[Message] = []
+    async with fake_asterisk(script) as port, running_client(port, events) as client:
+        await wait_until(lambda: client.connected)
+        response, entries = await client.list_action({"Action": "DBGet"})
+        assert response["Response"] == "Success"
+        assert [(entry["Event"], entry["Val"]) for entry in entries] == [
+            ("DBGetResponse", "routes")
+        ]
+        await wait_until(lambda: len(events) == 1)
+        assert events[0]["Event"] == "Hangup"
+
+
 async def test_wrong_secret_never_connects() -> None:
     logins = 0
 

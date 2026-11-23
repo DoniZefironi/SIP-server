@@ -3,14 +3,18 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
+import httpx
 from fastapi import FastAPI
 
 from app.ami.client import AmiClient
 from app.ami.events import store_event
-from app.api import calls, events, health, statistics
+from app.api import calls, departments, events, health, statistics
 from app.config import get_settings
 from app.db.session import engine
+from app.services.bitrix import Bitrix
 from app.services.bitrix_delivery import run_bitrix_delivery
+from app.services.department_directory import DepartmentDirectory
+from app.services.department_routes import DepartmentRoutes
 from app.services.maintenance import run_maintenance
 from app.services.recording_queue import run_recording_queue
 from app.services.summarization import run_summarization
@@ -26,6 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     app.state.ami = None
+    app.state.department_routes = None
     ami_task: asyncio.Task[None] | None = None
     if settings.ami_enabled:
         client = AmiClient(
@@ -38,7 +43,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ping_interval=settings.ami_ping_interval,
         )
         app.state.ami = client
+        app.state.department_routes = DepartmentRoutes(client)
         ami_task = asyncio.create_task(client.run(), name="ami")
+
+    app.state.department_directory = None
+    directory_http = None
+    webhook = settings.bitrix_webhook_url.get_secret_value().strip()
+    if settings.bitrix_directory_enabled and webhook:
+        directory_http = httpx.AsyncClient(timeout=10)
+        try:
+            app.state.department_directory = DepartmentDirectory(Bitrix(directory_http, webhook))
+        except ValueError:
+            logging.getLogger(__name__).warning("Некорректный вебхук справочника Bitrix24")
 
     maintenance_task: asyncio.Task[None] | None = None
     if settings.maintenance_enabled:
@@ -75,6 +91,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        if directory_http is not None:
+            await directory_http.aclose()
         await engine.dispose()
 
 
@@ -83,3 +101,4 @@ app.include_router(health.router)
 app.include_router(events.router, prefix="/api")
 app.include_router(calls.router, prefix="/api")
 app.include_router(statistics.router, prefix="/api")
+app.include_router(departments.router, prefix="/api")

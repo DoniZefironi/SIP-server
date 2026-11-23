@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     yandexgpt_folder_id: str = ""
     yandexgpt_api_key: SecretStr = SecretStr("")
     bitrix_enabled: bool = False
+    bitrix_directory_enabled: bool = False
     bitrix_webhook_url: SecretStr = SecretStr("")
     bitrix_deal_code_field: str = "UF_CRM_1730705809359"
     bitrix_sector_recipients: dict[int, int] = {}

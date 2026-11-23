@@ -111,6 +111,24 @@ class Bitrix:
                 return positive_id(items[0].get("id"))
         return None
 
+    async def directory_pages(
+        self, method: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        items = []
+        start = 0
+        while True:
+            body = await self._call(method, {**payload, "start": start})
+            page = body["result"]
+            if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
+                raise BitrixError("Bitrix24 вернул неверный ответ справочника")
+            items.extend(page)
+            if "next" not in body:
+                return items
+            next_start = positive_id(body["next"])
+            if next_start is None or next_start <= start:
+                raise BitrixError("Bitrix24 вернул неверную страницу справочника")
+            start = next_start
+
     async def find_by_phone(self, kind: str, phones: list[str]) -> list[int]:
         body = await self._call(
             "crm.duplicate.findbycomm",

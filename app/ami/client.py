@@ -68,6 +68,7 @@ class AmiClient:
 
         self._writer: asyncio.StreamWriter | None = None
         self._pending: dict[str, asyncio.Future[Message]] = {}
+        self._lists: dict[str, tuple[list[Message], asyncio.Future[None]]] = {}
         self._action_ids = itertools.count(1)
         self._events: asyncio.Queue[Message] = asyncio.Queue(maxsize=_EVENT_QUEUE_SIZE)
         self.connected = False
@@ -89,17 +90,41 @@ class AmiClient:
 
     async def send_action(self, fields: Mapping[str, str]) -> Message:
         """Отправить действие и дождаться ответа станции."""
+        return await self._send(fields)
+
+    async def list_action(self, fields: Mapping[str, str]) -> tuple[Message, list[Message]]:
+        """Получить ответ и все события списка, относящиеся к его ActionID."""
+        events: list[Message] = []
+        return await self._send(fields, events), events
+
+    async def _send(
+        self, fields: Mapping[str, str], events: list[Message] | None = None
+    ) -> Message:
         if self._writer is None:
             raise AmiError("нет соединения с AMI")
         action_id = str(next(self._action_ids))
-        future: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Message] = loop.create_future()
         self._pending[action_id] = future
+        finished: asyncio.Future[None] | None = None
+        if events is not None:
+            finished = loop.create_future()
+            self._lists[action_id] = (events, finished)
         try:
-            self._writer.write(encode_action({**fields, "ActionID": action_id}))
-            await self._writer.drain()
-            return await asyncio.wait_for(future, self._action_timeout)
+            async with asyncio.timeout(self._action_timeout):
+                self._writer.write(encode_action({**fields, "ActionID": action_id}))
+                await self._writer.drain()
+                reply = await future
+                if finished is not None and reply.get("Response") == "Success":
+                    await finished
+                return reply
         finally:
             self._pending.pop(action_id, None)
+            self._lists.pop(action_id, None)
+            # Чтение могло завершиться ошибкой, пока запись в сокет ещё шла.
+            for pending in (future, finished):
+                if pending is not None and pending.done() and not pending.cancelled():
+                    pending.exception()
 
     async def _session(self) -> None:
         reader, writer = await asyncio.wait_for(
@@ -144,17 +169,37 @@ class AmiClient:
         try:
             while True:
                 message = parse_message(await reader.readuntil(b"\r\n\r\n"))
+                action_id = message.get("ActionID", "")
                 if "Response" in message:
-                    future = self._pending.get(message.get("ActionID", ""))
+                    future = self._pending.get(action_id)
                     if future is not None and not future.done():
                         future.set_result(message)
                 elif "Event" in message:
-                    await self._events.put(message)
+                    result = self._lists.get(action_id)
+                    if result is None:
+                        await self._events.put(message)
+                    else:
+                        events, finished = result
+                        if message.get("EventList", "").lower() == "complete":
+                            if not finished.done():
+                                finished.set_result(None)
+                        else:
+                            events.append(message)
         finally:
             # Чтение остановилось — ответов уже не будет, не заставляем ждать таймаута.
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(AmiError("соединение с AMI прервано"))
+            for action_id, (_, finished) in self._lists.items():
+                response = self._pending[action_id]
+                if (
+                    not finished.done()
+                    and response.done()
+                    and not response.cancelled()
+                    and response.exception() is None
+                    and response.result().get("Response") == "Success"
+                ):
+                    finished.set_exception(AmiError("соединение с AMI прервано"))
 
     async def _dispatch(self) -> None:
         while True:
