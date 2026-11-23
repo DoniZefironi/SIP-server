@@ -71,13 +71,18 @@ def _store_phrase(phrases: dict, result: dict, update: dict, index: int, dialogu
     if not alternatives:
         return
     alternative = alternatives[0]
-    time_ms = alternative.get("startTimeMs")
-    if time_ms is None and (words := alternative.get("words")):
-        time_ms = words[0].get("startTimeMs")
+    phrase = alternative["text"].strip()
+    if not phrase:
+        return
+    # Граница фразы может включать паузу перед речью. Сортируем по первому слову.
+    time_ms = next(
+        (word["startTimeMs"] for word in alternative.get("words", []) if "startTimeMs" in word),
+        alternative.get("startTimeMs"),
+    )
     channel = update.get("channelTag", result.get("channelTag", "0")) if dialogue else ""
     phrases[str(channel), index] = (
         int(time_ms) if time_ms is not None else None,
-        alternative["text"].strip(),
+        phrase,
     )
 
 
