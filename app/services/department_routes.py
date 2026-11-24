@@ -6,13 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ami.astdb import AstDB
 from app.ami.client import AmiClient, AmiError
 from app.db.models import Call
 from app.services.bitrix import positive_id
 from app.services.phones import normalize_phone
 
 SECTORS = range(1, 6)
-_ROUTES_KEY = {"Family": "savt", "Key": "department_routes"}
 
 
 class BusyMode(StrEnum):
@@ -59,19 +59,12 @@ class SectorOccupied(Exception):
 class DepartmentRoutes:
     def __init__(self, ami: AmiClient) -> None:
         self._ami = ami
+        self._db = AstDB(ami)
         self._lock = asyncio.Lock()
 
     async def read(self) -> dict[int, DepartmentSettings]:
-        self._require_connection()
-        reply, events = await self._ami.list_action({"Action": "DBGet", **_ROUTES_KEY})
-        if reply.get("Message") == "Database entry not found":
-            return {}
-        if reply.get("Response") != "Success":
-            raise AmiError("AMI отклонил чтение маршрутов отделов")
-        for event in events:
-            if event.get("Event") == "DBGetResponse" and event.get("Val") is not None:
-                return _parse_routes(event["Val"])
-        raise AmiError("AMI не вернул маршруты отделов")
+        value = await self._db.get("savt", "department_routes")
+        return {} if value is None else _parse_routes(value)
 
     async def save(self, department_id: int, settings: DepartmentSettings | None) -> None:
         async with self._lock:
@@ -86,11 +79,7 @@ class DepartmentRoutes:
                 ):
                     raise SectorOccupied
                 routes[department_id] = settings
-            reply = await self._ami.send_action(
-                {"Action": "DBPut", **_ROUTES_KEY, "Val": _format_routes(routes)}
-            )
-            if reply.get("Response") != "Success":
-                raise AmiError("AMI отклонил сохранение маршрутов отделов")
+            await self._db.put("savt", "department_routes", _format_routes(routes))
 
     async def active_calls(self, session: AsyncSession) -> dict[int, int]:
         self._require_connection()

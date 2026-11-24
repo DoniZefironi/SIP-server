@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager, suppress
 import httpx
 from fastapi import FastAPI
 
+from app.ami.astdb import AstDB
 from app.ami.client import AmiClient
 from app.ami.events import store_event
 from app.api import calls, departments, events, health, statistics
+from app.api import settings as station_api
 from app.config import get_settings
 from app.db.session import engine
 from app.services.bitrix import Bitrix
@@ -18,6 +20,7 @@ from app.services.department_routes import DepartmentRoutes
 from app.services.maintenance import run_maintenance
 from app.services.recording_queue import run_recording_queue
 from app.services.summarization import run_summarization
+from app.services.telephony_settings import StationSettings
 from app.services.transcription import run_transcription
 
 
@@ -31,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.ami = None
     app.state.department_routes = None
+    app.state.station_settings = None
     ami_task: asyncio.Task[None] | None = None
     if settings.ami_enabled:
         client = AmiClient(
@@ -44,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.ami = client
         app.state.department_routes = DepartmentRoutes(client)
+        app.state.station_settings = StationSettings(AstDB(client))
         ami_task = asyncio.create_task(client.run(), name="ami")
 
     app.state.department_directory = None
@@ -102,3 +107,4 @@ app.include_router(events.router, prefix="/api")
 app.include_router(calls.router, prefix="/api")
 app.include_router(statistics.router, prefix="/api")
 app.include_router(departments.router, prefix="/api")
+app.include_router(station_api.router, prefix="/api")
