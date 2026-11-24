@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ami.client import AmiError
 from app.db.session import get_session
 from app.services.bitrix import BitrixError
-from app.services.department_directory import Department, DepartmentDirectory, Directory, Employee
+from app.services.department_directory import (
+    TELEPHONY_DEPARTMENT_IDS,
+    Department,
+    DepartmentDirectory,
+    Directory,
+    Employee,
+)
 from app.services.department_routes import (
     SECTORS,
     DepartmentRoutes,
@@ -71,7 +77,11 @@ async def _routing_state(
     if routes is None:
         return None, None
     try:
-        settings = await routes.read()
+        settings = {
+            department_id: route
+            for department_id, route in (await routes.read()).items()
+            if department_id in TELEPHONY_DEPARTMENT_IDS
+        }
     except _STATION_ERRORS as exc:
         log.warning("Маршруты отделов недоступны (%s)", type(exc).__name__)
         return None, None
@@ -126,6 +136,8 @@ async def departments(request: Request, session: Session) -> Departments:
 async def department(
     department_id: DepartmentId, request: Request, session: Session
 ) -> DepartmentDetail:
+    if department_id not in TELEPHONY_DEPARTMENT_IDS:
+        raise HTTPException(404, "Отдел не найден")
     directory = await _directory(request)
     settings, active = await _routing_state(_routes(request), session)
     if department_id not in directory.departments and department_id not in (settings or {}):
@@ -156,7 +168,9 @@ async def _save(
 async def save_settings(
     department_id: DepartmentId, settings: DepartmentSettings, request: Request
 ) -> DepartmentSettings:
-    if department_id not in (await _directory(request)).departments:
+    if department_id not in TELEPHONY_DEPARTMENT_IDS or department_id not in (
+        await _directory(request)
+    ).departments:
         raise HTTPException(404, "Отдел не найден в Bitrix24")
     await _save(request, department_id, settings)
     return settings

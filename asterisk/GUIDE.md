@@ -144,19 +144,29 @@ sudo cat /root/sip-passwords.txt
 sudo bash -c '
 umask 077
 s=$(openssl rand -hex 16)
-printf "[telephony]\nsecret=%s\ndeny=0.0.0.0/0.0.0.0\npermit=127.0.0.1/255.255.255.255\nread=call,agent,user\nwrite=\n" "$s" > /etc/asterisk/manager_users.conf
+printf "[telephony]\nsecret=%s\ndeny=0.0.0.0/0.0.0.0\npermit=127.0.0.1/255.255.255.255\nread=call,agent,user\nwrite=system\n" "$s" > /etc/asterisk/manager_users.conf
 chown asterisk:asterisk /etc/asterisk/manager_users.conf
 echo "$s" > /root/ami-secret.txt
 '
 ```
 
-Пользователь `telephony` для сервиса: заходить можно только с самой машины, только читать
-события звонков и очередей, ничем не управлять. Пароль сохранён в `/root/ami-secret.txt`,
+Пользователь `telephony` подключается с самой машины, читает события звонков и очередей
+и выполняет действия для управления настройками. Пароль сохранён в `/root/ami-secret.txt`,
 он понадобится при запуске сервиса.
 
-Для вкладок «Отделы» и «Настройки» измените строку `write=` в существующей секции `[telephony]` на
-`write=system` и примените командой `sudo asterisk -rx 'manager reload'`. Эта категория даёт
-сервису доступ к `DBGet`, `DBGetTree`, `DBPut`, `DBDel` и `CoreShowChannels`. AMI остаётся на `127.0.0.1`.
+На уже настроенной станции добавьте `system` в `write=` существующей секции `[telephony]`.
+Эта категория даёт сервису доступ к `DBGet`, `DBGetTree`, `DBPut`, `DBDel` и
+`CoreShowChannels`. AMI остаётся на `127.0.0.1`. Примените права и переподключите API:
+
+```sh
+sudo asterisk -rx 'manager reload'
+cd /opt/savt-telephony
+sudo docker compose restart app
+```
+
+`manager reload` обновляет права для новых AMI-соединений. Уже открытая сессия API
+сохраняет права, полученные при входе.
+
 Установите обновлённый `extensions.conf` и выполните `sudo asterisk -rx 'dialplan reload'`,
 чтобы сохранённые в панели номера и режимы очереди применялись к звонкам.
 

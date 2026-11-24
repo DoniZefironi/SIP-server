@@ -8,6 +8,14 @@ from pydantic import BaseModel
 
 from app.services.bitrix import Bitrix, BitrixError, positive_id
 
+TELEPHONY_DEPARTMENT_IDS = (
+    91,  # Коммерческий сектор
+    69,  # Бухгалтерия
+    25,  # Сектор разработки программного обеспечения
+    27,  # Сектор наладки
+    23,  # Сектор проектирования
+)
+
 
 class Employee(BaseModel):
     id: int
@@ -40,11 +48,11 @@ class DepartmentDirectory:
         async with self._lock:
             if self._directory is not None and time.monotonic() < self._expires_at:
                 return self._directory
-            departments = await self._bitrix.directory_pages("department.get", {"sort": "SORT"})
+            departments = await self._bitrix.departments(TELEPHONY_DEPARTMENT_IDS)
             users = await self._bitrix.directory_pages(
                 "user.get",
                 {
-                    "filter": {"ACTIVE": True},
+                    "filter": {"ACTIVE": True, "UF_DEPARTMENT": list(TELEPHONY_DEPARTMENT_IDS)},
                     "select": [
                         "ID", "NAME", "LAST_NAME", "SECOND_NAME", "WORK_POSITION",
                         "PERSONAL_PHOTO", "UF_DEPARTMENT", "USER_TYPE",
@@ -73,6 +81,9 @@ def _build_directory(
         by_id[department_id] = Department(
             id=department_id, name=name, parent_id=positive_id(item.get("PARENT"))
         )
+    for department in by_id.values():
+        if department.parent_id not in by_id:
+            department.parent_id = None
 
     employees: dict[int, dict[int, Employee]] = defaultdict(dict)
     for user in users:

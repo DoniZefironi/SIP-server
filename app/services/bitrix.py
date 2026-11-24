@@ -111,6 +111,24 @@ class Bitrix:
                 return positive_id(items[0].get("id"))
         return None
 
+    async def departments(self, department_ids: tuple[int, ...]) -> list[dict[str, Any]]:
+        commands = {f"department_{number}": number for number in department_ids}
+        body = await self._call(
+            "batch",
+            {"cmd": {key: f"department.get?ID={number}" for key, number in commands.items()}},
+        )
+        batch = body["result"]
+        pages = batch.get("result") if isinstance(batch, dict) else None
+        if not isinstance(pages, dict) or batch.get("result_error"):
+            raise BitrixError("Bitrix24 не вернул выбранные подразделения")
+        departments = []
+        for key, number in commands.items():
+            page = pages.get(key)
+            if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
+                raise BitrixError("Bitrix24 вернул неверный список подразделений")
+            departments.extend(item for item in page if positive_id(item.get("ID")) == number)
+        return departments
+
     async def directory_pages(
         self, method: str, payload: dict[str, Any]
     ) -> list[dict[str, Any]]:
