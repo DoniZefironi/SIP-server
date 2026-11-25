@@ -94,7 +94,9 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
                 call.sector_by_default = True
             case "sector":
                 call.sector = _int(message.get("Sector"))
-            case "bot_answered":
+            case "bot_answered" if call.outcome in (
+                None, Outcome.ABANDONED_MENU, Outcome.ABANDONED_QUEUE
+            ):
                 call.outcome = Outcome.BOT_ANSWERED
             case "emergency_referred":
                 call.outcome = Outcome.EMERGENCY_REFERRED

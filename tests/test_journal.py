@@ -99,13 +99,48 @@ def test_bot_answer_is_a_distinct_incoming_outcome(sector: str | None) -> None:
     events = [stage("start", Number="+375291234567")]
     if sector is not None:
         events.append(stage("sector", Sector=sector))
-    call = run(*events, stage("bot_answered"), hangup())
+    recording = "/srv/recordings/calls/x"
+    call = run(*events, user("SavtRecording", File=recording), stage("bot_answered"), hangup())
     assert call.direction == Direction.INCOMING
     assert call.outcome == Outcome.BOT_ANSWERED
     assert call.sector == (int(sector) if sector is not None else None)
     assert call.answered_by is None
     assert call.message_file is None
+    assert call.recording == recording
     assert call.ended_at is not None
+
+
+def test_employee_answer_after_bot_keeps_original_recording() -> None:
+    recording = "/srv/recordings/calls/x"
+    call = run(
+        stage("start", Number="+375291234567"),
+        stage("sector", Sector="2"),
+        user("SavtRecording", File=recording),
+        stage("bot_answered"),
+        {"Event": "QueueCallerJoin", "Linkedid": LINKED},
+        {"Event": "AgentConnect", "Linkedid": LINKED, "Interface": "Local/2"},
+        stage("bot_answered"),
+        hangup(),
+    )
+    assert call.outcome == Outcome.ANSWERED
+    assert call.answered_by == "Local/2"
+    assert call.recording == recording
+
+
+def test_bot_answer_keeps_voicemail_as_the_final_outcome() -> None:
+    recording = "/srv/recordings/calls/x"
+    call = run(
+        stage("start", Number="+375291234567"),
+        user("SavtRecording", File=recording),
+        stage("bot_answered"),
+        stage("afterhours"),
+        user("SavtMessage", File="m.wav"),
+        stage("bot_answered"),
+        hangup(),
+    )
+    assert call.outcome == Outcome.MESSAGE_AFTERHOURS
+    assert call.message_file == "m.wav"
+    assert call.recording == recording
 
 
 def test_blocked_number() -> None:

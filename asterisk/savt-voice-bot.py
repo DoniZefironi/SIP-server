@@ -190,6 +190,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
     retries = 0
     stage = "reference"
     reference = None
+    reported = False
     prompt = phrases / f"bot_question{suffix}"
     with TemporaryDirectory(prefix="savt-voice-") as directory:
         answer_path = Path(directory, "answer")
@@ -216,6 +217,11 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                 )
             else:
                 turn = {"status": "repeat"}
+            if linkedid and not reported and turn["status"] in (
+                "answered", "confirm_reference", "no_answer", "urgent_operator", *REFERENCE_PROMPTS,
+            ):
+                agi(f'EXEC UserEvent "SavtCall,Stage: bot_answered,Linkedid: {linkedid}"')
+                reported = True
             match turn["status"]:
                 case "emergency":
                     if _play(phrases / "bot_emergency", "") >= 0:

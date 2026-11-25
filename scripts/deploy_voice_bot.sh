@@ -31,11 +31,13 @@ import sys
 from pathlib import Path
 
 
-def bot_context(text):
+def context_bounds(text, name, *, allow_missing=False):
     headers = list(re.finditer(rb"(?m)^[ \t]*\[([^]\r\n]+)\][^\r\n]*\r?$", text))
-    indices = [i for i, match in enumerate(headers) if match[1] == b"voice-bot-pilot"]
+    indices = [i for i, match in enumerate(headers) if match[1] == name.encode("ascii")]
+    if not indices and allow_missing:
+        return None
     if len(indices) != 1:
-        raise SystemExit("Ожидается один контекст [voice-bot-pilot].")
+        raise SystemExit(f"Ожидается один контекст [{name}].")
     index = indices[0]
     start = headers[index].start()
     end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
@@ -47,20 +49,63 @@ def bot_context(text):
     return start, start + sum(map(len, lines))
 
 
+def replace_context(text, name, replacement, *, allow_missing=False):
+    bounds = context_bounds(text, name, allow_missing=allow_missing)
+    if bounds is None:
+        separator = b"\r\n" if b"\r\n" in text else b"\n"
+        if separator == b"\r\n":
+            replacement = replacement.replace(b"\n", separator)
+        return text + separator * 2 + replacement
+    start, end = bounds
+    if b"\r\n" in text[start:end]:
+        replacement = replacement.replace(b"\n", b"\r\n")
+    return text[:start] + replacement + text[end:]
+
+
 active_path, source_path, output_path = map(Path, sys.argv[1:4])
 agi_file, phrase_dir = (value.encode("ascii") for value in sys.argv[4:])
 active = active_path.read_bytes()
 source = source_path.read_bytes().replace(b"\r\n", b"\n")
-start, end = bot_context(active)
-source_start, source_end = bot_context(source)
+source_start, source_end = context_bounds(source, "voice-bot-pilot")
 replacement = source[source_start:source_end]
 invocation = b"EAGI(savt-voice-bot.py,${PHRASES}"
 if replacement.count(invocation) != 1:
     raise SystemExit("В новом контексте не найден вызов голосового AGI.")
 replacement = replacement.replace(invocation, b"EAGI(" + agi_file + b",${PHRASES}/" + phrase_dir)
-if b"\r\n" in active[start:end]:
-    replacement = replacement.replace(b"\n", b"\r\n")
-output_path.write_bytes(active[:start] + replacement + active[end:])
+active = replace_context(active, "voice-bot-pilot", replacement)
+
+source_start, source_end = context_bounds(source, "sub-record-incoming")
+active = replace_context(
+    active, "sub-record-incoming", source[source_start:source_end], allow_missing=True,
+)
+
+start, end = context_bounds(active, "sector")
+sector = active[start:end]
+source_start, source_end = context_bounds(source, "sector")
+record_call = b"Gosub(sub-record-incoming,s,1(b))"
+if record_call not in sector:
+    lines = source[source_start:source_end].splitlines(keepends=True)
+    new_step = next(line for line in lines if record_call in line)
+    previous = re.compile(
+        rb"(?m)^ same => n,Set\(REC=\$\{RECORDINGS\}/calls/[^\r\n]+\r?\n"
+        rb" same => n,MixMonitor\(\$\{REC\}\.wav,br[^\r\n]+\r?\n"
+        rb" same => n,UserEvent\(SavtRecording,[^\r\n]+\r?\n"
+    )
+    old_step = previous.search(sector)
+    if old_step is None:
+        raise SystemExit("В [sector] не найден прежний блок записи. Сверьте рабочий dialplan.")
+    separator = b"\r\n" if b"\r\n" in sector else b"\n"
+    comment = separator.join((
+        " ; Запись: общий файл, клиент и сотрудник отдельно. Пишется только сам разговор".encode(),
+        " ; (флаг b), без меню и музыки ожидания.".encode(),
+        b"",
+    ))
+    before = sector[:old_step.start()].removesuffix(comment)
+    active = active[:start] + before + new_step.replace(b"\n", separator) + (
+        sector[old_step.end():] + active[end:]
+    )
+
+output_path.write_bytes(active)
 PY
 
 echo 'Обновляю приложение'
@@ -119,7 +164,9 @@ cp -p -- "$extensions" "$backup"
 mv -fT -- "$candidate" "$extensions"
 
 if ! timeout 10s asterisk -rx 'dialplan reload' ||
-   ! timeout 5s asterisk -rx 'dialplan show voice-bot-pilot' | grep -F "$agi_file"; then
+   ! timeout 5s asterisk -rx 'dialplan show voice-bot-pilot' | grep -F "$agi_file" ||
+   ! timeout 5s asterisk -rx 'dialplan show sub-record-incoming' | grep -F 'MixMonitor(' ||
+   ! timeout 5s asterisk -rx 'dialplan show sector' | grep -F 'Gosub(sub-record-incoming,s,1(b))'; then
   cp -p -- "$backup" "$candidate"
   mv -fT -- "$candidate" "$extensions"
   timeout 10s asterisk -rx 'dialplan reload'
