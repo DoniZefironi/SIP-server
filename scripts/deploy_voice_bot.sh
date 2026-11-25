@@ -54,10 +54,10 @@ source = source_path.read_bytes().replace(b"\r\n", b"\n")
 start, end = bot_context(active)
 source_start, source_end = bot_context(source)
 replacement = source[source_start:source_end]
-invocation = b"AGI(savt-voice-bot.py,${PHRASES}"
+invocation = b"EAGI(savt-voice-bot.py,${PHRASES}"
 if replacement.count(invocation) != 1:
     raise SystemExit("В новом контексте не найден вызов голосового AGI.")
-replacement = replacement.replace(invocation, b"AGI(" + agi_file + b",${PHRASES}/" + phrase_dir)
+replacement = replacement.replace(invocation, b"EAGI(" + agi_file + b",${PHRASES}/" + phrase_dir)
 if b"\r\n" in active[start:end]:
     replacement = replacement.replace(b"\n", b"\r\n")
 output_path.write_bytes(active[:start] + replacement + active[end:])
@@ -69,7 +69,8 @@ docker compose exec -T app python -m app.services.voice_bot "/tmp/$phrase_dir" <
 docker compose cp "app:/tmp/$phrase_dir/." "$work/" </dev/null
 
 prompts="bot_question bot_feedback bot_question_afterhours bot_feedback_afterhours
-bot_ask_question bot_reference_found bot_reference_unavailable bot_retry bot_wait"
+bot_ask_question bot_reference_found bot_reference_unavailable bot_retry bot_retry_long bot_wait
+bot_emergency bot_urgent_operator"
 for prompt in $prompts; do
   if [[ ! -s "$work/$prompt.wav" ]]; then
     echo "Отсутствует $prompt.wav." >&2

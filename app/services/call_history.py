@@ -17,7 +17,7 @@ class CallTab(StrEnum):
 
 TAB_CONDITIONS = {
     CallTab.INCOMING: (Call.direction == Direction.INCOMING)
-    & Call.outcome.in_((Outcome.ANSWERED, Outcome.BOT_ANSWERED)),
+    & Call.outcome.in_((Outcome.ANSWERED, Outcome.BOT_ANSWERED, Outcome.EMERGENCY_REFERRED)),
     CallTab.OUTGOING: Call.direction == Direction.OUTGOING,
     CallTab.MISSED: (
         (Call.direction == Direction.INCOMING)

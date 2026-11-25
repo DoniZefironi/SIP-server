@@ -10,6 +10,7 @@ import pytest
 from app.config import Settings, get_settings
 from app.main import app
 from app.services.voice_bot import spoken_reference
+from app.services.voice_safety import safety_route
 
 _PATH = "/internal/telephony/answer-audio"
 _HEADERS = {"X-Telephony-Secret": "test-secret", "Content-Type": "audio/wav"}
@@ -48,6 +49,29 @@ def test_spoken_reference_preserves_groups_without_guessing_kind(text, number, k
 
 
 @pytest.mark.parametrize(
+    ("text", "status"),
+    [
+        ("Шкаф горит, помогите!", "emergency"),
+        ("Пожара нет, но из щита идёт дым.", "emergency"),
+        ("Коллегу ударило электричеством.", "emergency"),
+        ("Пахнет газом.", "emergency"),
+        ("Сработала пожарная сигнализация.", "emergency"),
+        ("Индикатор питания горит, а за шкафом искрит провод.", "emergency"),
+        ("В шкафу пахнет гарью, выбивает автомат.", "urgent_operator"),
+        ("Можно перемкнуть контакты, чтобы обойти защиту?", "urgent_operator"),
+        ("Где взять памятку на случай пожара?", "urgent_operator"),
+        ("Вчера шкаф загорелся, мы его потушили.", "urgent_operator"),
+        ("Горит зелёный светодиод на панели.", None),
+        ("Индикатор питания горит.", None),
+        ("Огня нет, оборудование не дымит.", None),
+        ("Где открыть документы по шкафу 25_125_2?", None),
+    ],
+)
+def test_voice_safety_routes_hazards_without_treating_indicators_as_fire(text, status):
+    assert safety_route(text) == status
+
+
+@pytest.mark.parametrize(
     ("pcm", "provider_reply", "expected_status", "expected_hosts"),
     [
         (
@@ -64,6 +88,12 @@ def test_spoken_reference_preserves_groups_without_guessing_kind(text, number, k
         ),
         (b"\x00" * len(_PCM), None, 204, []),
         (_PCM, None, 502, ["stt.api.cloud.yandex.net", "helper.savt.by"]),
+        (
+            _PCM,
+            {"status": "answered", "answer": "Снимите крышку шкафа."},
+            204,
+            ["stt.api.cloud.yandex.net", "helper.savt.by"],
+        ),
     ],
 )
 async def test_answer_audio(monkeypatch, pcm, provider_reply, expected_status, expected_hosts):
@@ -167,7 +197,10 @@ async def test_voice_dialogue_carries_context_and_handles_spoken_choices(monkeyp
 
         history = [first["exchange"]]
         payload = {"audio": audio, "history": history}
-        followup = (await api.post(path, headers=_HEADERS, json=payload)).json()
+        long_audio = base64.b64encode(_wav(_PCM * 18)).decode()
+        followup = (await api.post(
+            path, headers=_HEADERS, json={**payload, "audio": long_audio}
+        )).json()
         assert followup["status"] == "answered"
         assert followup["exchange"]["question"] == "А где именно её открыть?"
         for status in ("operator", "repeat", "done"):
@@ -180,3 +213,36 @@ async def test_voice_dialogue_carries_context_and_handles_spoken_choices(monkeyp
     assert len(provider_questions) == 3
     assert provider_questions[1].startswith("Текущий вопрос: А где именно её открыть?")
     assert _QUESTION in provider_questions[1] and _ANSWER in provider_questions[1]
+
+
+@pytest.mark.parametrize("stage", ["reference", "confirm_reference", "question"])
+async def test_safety_prioritizes_emergency_over_lookup_and_faq(monkeypatch, stage):
+    real_client = httpx.AsyncClient
+    transcript = "Шкаф горит, помогите."
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "stt.api.cloud.yandex.net"
+        return httpx.Response(200, json={"result": transcript})
+
+    monkeypatch.setattr(
+        "app.api.call_objects.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(provider), **kwargs),
+    )
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_settings,
+        lambda: Settings(savtassist_api_secret="test-secret", speechkit_api_key="test-key"),
+    )
+    payload = {"audio": base64.b64encode(_wav(_PCM)).decode(), "stage": stage}
+    if stage == "confirm_reference":
+        payload["reference"] = {"number": "25_125", "kind": "project"}
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        result = await api.post("/internal/telephony/voice-turn", headers=_HEADERS, json=payload)
+        assert result.status_code == 200
+        assert result.json() == {"status": "emergency"}
+
+        transcript = "Пахнет гарью из щита."
+        result = await api.post("/internal/telephony/voice-turn", headers=_HEADERS, json=payload)
+        assert result.json() == {"status": "urgent_operator"}

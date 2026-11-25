@@ -13,7 +13,9 @@ from app.config import get_settings
 from app.services.savtassist import ObjectKind, ObjectLookupRequest
 
 MAX_QUESTION_BYTES = 256_000
-MAX_VOICE_TURN_BYTES = 360_000
+VOICE_RECORDING_SECONDS = 29
+MAX_VOICE_WAV_BYTES = VOICE_RECORDING_SECONDS * 8000 * 2 + 44
+MAX_VOICE_TURN_BYTES = 640_000
 _MAX_QUESTION_FRAMES = 13 * 8000
 _MAX_ANSWER_BYTES = 2_000_000
 _PCM = {"format": "lpcm", "sampleRateHertz": "8000", "lang": "ru-RU"}
@@ -39,7 +41,12 @@ _PROMPTS = {
     "bot_reference_found": "Спасибо, нашла номер. Задайте ваш вопрос.",
     "bot_reference_unavailable": "Не удалось найти номер. Задайте вопрос, я попробую помочь.",
     "bot_retry": "Я слушаю. Продолжайте после сигнала.",
+    "bot_retry_long": "Сформулируйте вопрос короче, пожалуйста.",
     "bot_wait": "Так, так, так…",
+    "bot_emergency": "Срочно звоните один, один, два. Отойдите в безопасное место.",
+    "bot_urgent_operator": (
+        "При дыме, огне или угрозе людям сразу звоните один, один, два."
+    ),
 }
 _OPERATOR = re.compile(
     r"(?:"
@@ -95,7 +102,7 @@ class VoiceExchange(BaseModel):
 class VoiceTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    audio: str = Field(max_length=((MAX_QUESTION_BYTES + 2) // 3) * 4)
+    audio: str = Field(max_length=((MAX_VOICE_WAV_BYTES + 2) // 3) * 4)
     history: list[VoiceExchange] = Field(default_factory=list, max_length=2)
     stage: Literal["reference", "confirm_reference", "question"] = "question"
     reference: VoiceReference | None = None
@@ -110,7 +117,7 @@ class VoiceTurnRequest(BaseModel):
 
 class VoiceTurn(BaseModel):
     status: Literal[
-        "answered", "operator", "done", "repeat",
+        "answered", "operator", "done", "repeat", "emergency", "urgent_operator",
         "confirm_reference", "reference_found", "reference_unavailable", "ask_question",
     ]
     audio: str | None = None
@@ -221,12 +228,12 @@ class VoiceError(Exception):
     pass
 
 
-def question_pcm(audio: bytes) -> bytes:
+def question_pcm(audio: bytes | bytearray, max_frames: int = _MAX_QUESTION_FRAMES) -> bytes:
     with wave.open(io.BytesIO(audio), "rb") as wav:
         if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, 8000):
             raise ValueError("Ожидается WAV PCM, 8 кГц, моно, 16 бит")
         frames = wav.getnframes()
-        if frames > _MAX_QUESTION_FRAMES:
+        if frames > max_frames:
             raise ValueError("Запись вопроса слишком длинная")
         pcm = wav.readframes(frames)
         if len(pcm) != frames * 2:

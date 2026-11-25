@@ -30,6 +30,8 @@ from app.services.savtassist import (
 from app.services.voice_bot import (
     MAX_QUESTION_BYTES,
     MAX_VOICE_TURN_BYTES,
+    MAX_VOICE_WAV_BYTES,
+    VOICE_RECORDING_SECONDS,
     SpeechKitVoice,
     VoiceError,
     VoiceExchange,
@@ -43,6 +45,7 @@ from app.services.voice_bot import (
     spoken_reference,
     voice_intent,
 )
+from app.services.voice_safety import answer_requires_operator, safety_route
 
 router = APIRouter(prefix="/internal/telephony", tags=["internal: telephony"])
 log = logging.getLogger(__name__)
@@ -127,10 +130,15 @@ async def answer_question(
     client: Annotated[SavtAssist, Depends(_savtassist)],
 ) -> QuestionAnswer:
     """Получить короткий ответ на общий вопрос для озвучки."""
+    if safety_route(request.question):
+        return QuestionAnswer(status="needs_operator")
     try:
-        return await client.answer_question(request)
+        result = await client.answer_question(request)
     except SavtAssistError as error:
         raise HTTPException(502, str(error)) from None
+    if result.answer is not None and answer_requires_operator(result.answer):
+        return QuestionAnswer(status="needs_operator")
+    return result
 
 
 async def _read_body(request: Request, limit: int) -> bytearray:
@@ -142,10 +150,13 @@ async def _read_body(request: Request, limit: int) -> bytearray:
     return body
 
 
-def _voice_pcm(audio: bytes | bytearray) -> bytes:
-    if len(audio) > MAX_QUESTION_BYTES:
+def _voice_pcm(audio: bytes | bytearray, *, dialogue: bool = False) -> bytes:
+    limit = MAX_VOICE_WAV_BYTES if dialogue else MAX_QUESTION_BYTES
+    if len(audio) > limit:
         raise HTTPException(413, "Запись вопроса слишком велика")
     try:
+        if dialogue:
+            return question_pcm(audio, max_frames=VOICE_RECORDING_SECONDS * 8000)
         return question_pcm(audio)
     except (ValueError, wave.Error, EOFError, struct.error):
         raise HTTPException(422, "Неверный формат записи вопроса") from None
@@ -199,6 +210,10 @@ async def _process_audio(
             started = perf_counter()
             question = await speech.recognize(pcm)
             recognized = perf_counter()
+            safety = safety_route(question)
+            if safety is not None:
+                log.info("voice turn %s stt_ms=%d", safety, (recognized - started) * 1000)
+                return VoiceTurn(status=safety), b""
             if dialogue is not None:
                 intent = voice_intent(question)
                 if intent != "question":
@@ -222,6 +237,9 @@ async def _process_audio(
                     (looked_up - recognized) * 1000,
                 )
                 return VoiceTurn(status="operator"), b""
+            if answer_requires_operator(result.answer):
+                log.info("voice turn urgent_operator reason=knowledge_answer")
+                return VoiceTurn(status="urgent_operator"), b""
 
             audio = await speech.synthesize(result.answer)
             log.info(
@@ -278,7 +296,7 @@ async def voice_turn(
     body = await _read_body(request, MAX_VOICE_TURN_BYTES)
     try:
         data = VoiceTurnRequest.model_validate_json(body)
-        pcm = _voice_pcm(base64.b64decode(data.audio, validate=True))
+        pcm = _voice_pcm(base64.b64decode(data.audio, validate=True), dialogue=True)
     except (ValidationError, binascii.Error, ValueError):
         raise HTTPException(422, "Некорректная реплика голосового бота") from None
     turn, audio = await _process_audio(pcm, client, speech, data, session)

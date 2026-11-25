@@ -114,6 +114,18 @@ def test_blocked_number() -> None:
     assert call.caller == "+375297654321"
 
 
+def test_emergency_referral_retains_separate_outcome_after_hangup() -> None:
+    call = run(
+        stage("start", Number="375291234567"),
+        stage("sector", Sector="2"),
+        stage("emergency_referred"),
+        hangup(),
+    )
+    assert call.outcome == Outcome.EMERGENCY_REFERRED
+    assert call.ended_at is not None
+    assert call.answered_by is None
+
+
 def test_hung_up_in_menu() -> None:
     call = run(stage("start", Number="375291234567"), hangup())
     assert call.outcome == Outcome.ABANDONED_MENU
