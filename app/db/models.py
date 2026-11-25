@@ -1,6 +1,8 @@
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -57,6 +59,9 @@ class Call(Base):
     # Номер клиента. Для исходящего звонка это номер назначения.
     caller_raw: Mapped[str | None] = mapped_column(String(64))
     caller: Mapped[str | None] = mapped_column(String(20), index=True)
+    object_lookup: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql")
+    )
 
     sector: Mapped[int | None] = mapped_column(SmallInteger, index=True)
     # True — клиент не выбрал сектор и попал в сектор по умолчанию после неудачных попыток.

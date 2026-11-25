@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from app.ami.astdb import AstDB
 from app.ami.client import AmiClient
 from app.ami.events import store_event
-from app.api import calls, departments, events, health, statistics
+from app.api import call_objects, calls, departments, events, health, statistics
 from app.api import settings as station_api
 from app.config import get_settings
 from app.db.session import engine
@@ -108,3 +108,4 @@ app.include_router(calls.router, prefix="/api")
 app.include_router(statistics.router, prefix="/api")
 app.include_router(departments.router, prefix="/api")
 app.include_router(station_api.router, prefix="/api")
+app.include_router(call_objects.router)

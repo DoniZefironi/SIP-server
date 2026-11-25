@@ -46,6 +46,20 @@ async def test_deal_and_all_distinct_contact_owners() -> None:
     assert {"+375291234567", "375291234567", "80291234567"}.issubset(numbers)
 
 
+async def test_confirmed_call_object_takes_priority_over_transcript_code() -> None:
+    client = AsyncMock(spec=Bitrix)
+    call = Call(
+        object_lookup={
+            "number": "25_125_2",
+            "status": "found",
+            "match": {"kind": "cabinet", "bitrix_deal_id": "4582"},
+        }
+    )
+
+    assert await destinations(call, _SUMMARY, client, Settings()) == {("deal", 4582): None}
+    client.find_deal.assert_not_awaited()
+
+
 async def test_company_fallback_if_deal_and_contact_do_not_resolve() -> None:
     client = AsyncMock(spec=Bitrix)
     client.find_deal.return_value = None

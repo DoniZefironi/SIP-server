@@ -21,6 +21,7 @@ from app.services.call_history import (
 )
 from app.services.journal import Direction, Outcome
 from app.services.recordings import AudioKind, ready_recording
+from app.services.savtassist import CallObjectLookup
 from app.services.yandexgpt import CallSummary
 
 router = APIRouter(tags=["calls"])
@@ -61,6 +62,7 @@ class DeliveryOut(BaseModel):
 
 
 class CallDetail(CallOut):
+    object_lookup: CallObjectLookup | None
     transcription_status: str | None
     transcript: str | None
     summary_status: str | None
@@ -187,6 +189,7 @@ async def get_call(
     details = await run_in_threadpool(_to_out, call, voicemail_left)
     return CallDetail(
         **details.model_dump(),
+        object_lookup=call.object_lookup,
         transcription_status=job.transcription_status if job is not None else None,
         transcript=job.transcript if job is not None else None,
         summary_status=job.summary_status if job is not None else None,

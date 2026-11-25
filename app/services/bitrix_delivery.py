@@ -44,7 +44,11 @@ async def destinations(
     call: Call, summary: CallSummary, client: Bitrix, settings: Settings
 ) -> dict[tuple[str, int], str | None]:
     deal = None
-    if summary.deal_code:
+    if call.object_lookup and call.object_lookup.get("status") == "found":
+        match = call.object_lookup.get("match")
+        if isinstance(match, dict):
+            deal = positive_id(match.get("bitrix_deal_id"))
+    if deal is None and summary.deal_code:
         deal = await client.find_deal(settings.bitrix_deal_code_field, summary.deal_code)
 
     cards: set[tuple[str, int]] = set()

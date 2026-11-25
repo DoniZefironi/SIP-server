@@ -1,5 +1,8 @@
 # Применение настроек станции на сервере
 
+Для проверки голосового бота на действующей станции достаточно шагов из раздела
+[«Голосовой пилот»](#голосовой-пилот).
+
 Гайд переводит Asterisk на ВМ `siptrunk` (`10.1.0.148`) на сценарий из этой папки:
 меню, очереди секторов, запись разговоров в три файла, сообщения, чёрный список, праздники,
 доступ для сервиса телефонии. Займёт около получаса. Живых клиентов пока нет, поэтому
@@ -309,6 +312,87 @@ sudo asterisk -rx 'database put savt staff_104_sector 4'
 явное указание номера компании, задать согласованный номер в `savt/outbound_caller_id`.
 После применения dialplan и настроек PJSIP звонок, инициированный такой учётной записью,
 будет зарегистрирован в журнале вместе с результатом и записью разговора при ответе.
+
+## Голосовой пилот
+
+Позвоните с тестового мобильного на действующий номер life:) или наберите `778` на
+внутреннем SIP-аппарате. После сигнала задайте общий вопрос
+длительностью до 12 секунд. Две секунды тишины или клавиша `#` завершают запись.
+Клавиша `0` после сигнала сразу переводит в обычный сценарий. После озвучки ответа
+`1` подтверждает, что он помог. Клавиша `2`, тайм-аут, отсутствие подходящего ответа
+в базе или ошибка сервиса переводят звонок в штатный сценарий. В рабочее время
+открывается меню отделов, в нерабочее можно оставить голосовое сообщение.
+
+Пилот проверяет общие вопросы. Запрос номера объекта или шкафа голосом будет отдельным
+шагом. На линии life:) бот включается для одного выбранного номера звонящего. В журнал
+попадут тестовые звонки, которые перешли из пилота в штатный сценарий.
+
+На ВМ обновите приложение из каталога репозитория. Для синтеза у сервисного аккаунта
+SpeechKit должна быть роль `ai.speechkit-tts.user` или более широкая роль, включающая её.
+Используются текущие `TELEPHONY_SPEECHKIT_API_KEY` и `TELEPHONY_SAVTASSIST_API_SECRET`.
+[Роли SpeechKit](https://aistudio.yandex.ru/en/docs/ai-studio/security/#ai-speechkit-tts-user)
+
+```sh
+cd /opt/savt-telephony
+sudo docker compose up -d --build app
+sudo docker compose exec -T app python -m app.services.voice_bot /tmp/savt-bot-prompts
+prompts=$(mktemp -d)
+sudo docker compose cp app:/tmp/savt-bot-prompts/. "$prompts/"
+sudo install -o root -g asterisk -m 0644 "$prompts"/bot_*.wav /var/lib/asterisk/phrases/
+agi_dir=$(sudo asterisk -rx 'core show settings' |
+  sed -n 's/^[[:space:]]*AGI Scripts directory:[[:space:]]*//p')
+test -n "$agi_dir" &&
+  sudo mkdir -p -- "$agi_dir" &&
+  sudo install -o root -g asterisk -m 0755 asterisk/savt-voice-bot.py "$agi_dir/"
+```
+
+Скопируйте общий секрет из контейнера в файл, который читает пользователь Asterisk.
+Команда записывает секрет в файл без вывода на экран.
+
+```sh
+sudo -v
+sudo docker compose exec -T app python -c \
+  'from app.config import get_settings; print(get_settings().savtassist_api_secret.get_secret_value().strip())' |
+  sudo sh -c '
+    set -eu
+    IFS= read -r secret
+    test -n "$secret"
+    file=$(mktemp /etc/asterisk/.savt-voice-bot.XXXXXX)
+    trap "rm -f -- \"$file\"" EXIT
+    printf "%s\n" "$secret" > "$file"
+    chown root:asterisk "$file"
+    chmod 0640 "$file"
+    mv -f -- "$file" /etc/asterisk/savt-voice-bot.secret
+  '
+```
+
+В `/etc/asterisk/extensions.conf` примените изменения в `[from-trunk]` и `[reception]`,
+добавьте маршрут `778` в `[from-internal]` и контекст `[voice-bot-pilot]` из
+[текущего сценария](extensions.conf). Примените и проверьте маршруты.
+
+```sh
+sudo asterisk -rx 'dialplan reload'
+sudo asterisk -rx 'dialplan show from-trunk'
+sudo asterisk -rx 'dialplan show reception'
+sudo asterisk -rx 'dialplan show 778@from-internal'
+sudo asterisk -rx 'dialplan show voice-bot-pilot'
+```
+
+Для проверки с мобильного укажите его полный входящий Caller ID без плюса. Замените
+`375XXXXXXXXX` на номер **того, кто звонит**, в том же виде, в котором АТС получает
+его от оператора. С клиентской линии звоните на действующий номер life:).
+
+```sh
+sudo asterisk -rx 'database put savt voice_bot_test_caller 375XXXXXXXXX'
+```
+
+Задайте вопрос, ответ на который есть в опубликованном FAQ. Затем позвоните ещё раз,
+нажмите `0` после сигнала и проверьте переход в обычный сценарий. После теста снимите
+привязку к мобильному номеру.
+
+```sh
+sudo asterisk -rx 'database del savt voice_bot_test_caller'
+```
 
 ## Что знать
 
