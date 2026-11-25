@@ -29,7 +29,6 @@ END_SILENCE_SECONDS = 2
 MAX_SPEECH_BYTES = 29 * SAMPLE_RATE * 2
 MAX_ANSWER_BYTES = 2_000_044
 MAX_RESPONSE_BYTES = 2_700_000
-WAIT_NOTICE_SECONDS = 1.1
 REFERENCE_PROMPTS = {
     "reference_found": "bot_reference_found",
     "reference_unavailable": "bot_reference_unavailable",
@@ -165,7 +164,7 @@ def fetch_turn(secret: str, question: bytes, context: dict, wait_file: Path) -> 
             headers={"Content-Type": "application/json", "X-Telephony-Secret": secret},
         )
         if connection.sock is not None:
-            readable, _, _ = select([connection.sock], [], [], WAIT_NOTICE_SECONDS)
+            readable, _, _ = select([connection.sock], [], [], 0)
             if not readable:
                 history = context["history"]
                 choice = _choice(_play(wait_file, "012" if history else "02"), bool(history))
@@ -179,7 +178,7 @@ def fetch_turn(secret: str, question: bytes, context: dict, wait_file: Path) -> 
         raise RuntimeError("Ответ голосового бота слишком длинный")
     result = json.loads(body)
     if not isinstance(result, dict) or result.get("status") not in (
-        "answered", "operator", "done", "repeat", "emergency", "urgent_operator",
+        "answered", "operator", "done", "repeat", "emergency", "urgent_operator", "no_answer",
         "confirm_reference", *REFERENCE_PROMPTS,
     ):
         raise RuntimeError("API голосового бота вернул неизвестный результат")
@@ -224,6 +223,9 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                     return "operator"
                 case "urgent_operator":
                     _play(phrases / "bot_urgent_operator", "")
+                    return "operator"
+                case "no_answer":
+                    _play(phrases / "bot_no_answer", "")
                     return "operator"
                 case "operator":
                     return "operator"

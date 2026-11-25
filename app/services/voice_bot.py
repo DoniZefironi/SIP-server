@@ -42,7 +42,8 @@ _PROMPTS = {
     "bot_reference_unavailable": "Не удалось найти номер. Задайте вопрос, я попробую помочь.",
     "bot_retry": "Я слушаю. Продолжайте после сигнала.",
     "bot_retry_long": "Сформулируйте вопрос короче, пожалуйста.",
-    "bot_wait": "Так, так, так…",
+    "bot_wait": "Тактактак",
+    "bot_no_answer": "Точного ответа на этот вопрос у меня нет.",
     "bot_emergency": "Срочно звоните один, один, два. Отойдите в безопасное место.",
     "bot_urgent_operator": (
         "При дыме, огне или угрозе людям сразу звоните один, один, два."
@@ -117,7 +118,7 @@ class VoiceTurnRequest(BaseModel):
 
 class VoiceTurn(BaseModel):
     status: Literal[
-        "answered", "operator", "done", "repeat", "emergency", "urgent_operator",
+        "answered", "operator", "done", "repeat", "emergency", "urgent_operator", "no_answer",
         "confirm_reference", "reference_found", "reference_unavailable", "ask_question",
     ]
     audio: str | None = None
@@ -264,11 +265,12 @@ class SpeechKitVoice:
             raise VoiceError("SpeechKit не распознал вопрос") from None
         return text.strip()
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str, *, speed: float = 1.0) -> bytes:
+        params = {**_PCM, "voice": "alena", "text": text}
+        if speed != 1.0:
+            params["speed"] = str(speed)
         try:
-            response = await self._http.post(
-                _TTS_URL, data={**_PCM, "voice": "alena", "text": text}, headers=self._headers
-            )
+            response = await self._http.post(_TTS_URL, data=params, headers=self._headers)
             response.raise_for_status()
         except httpx.HTTPError:
             raise VoiceError("SpeechKit не синтезировал ответ") from None
@@ -288,7 +290,10 @@ async def _synthesize_prompts() -> dict[str, bytes]:
         raise SystemExit("Укажи TELEPHONY_SPEECHKIT_API_KEY")
     async with httpx.AsyncClient(timeout=8) as http:
         speech = SpeechKitVoice(http, key)
-        return {name: await speech.synthesize(text) for name, text in _PROMPTS.items()}
+        return {
+            name: await speech.synthesize(text, speed=1.55 if name == "bot_wait" else 1.0)
+            for name, text in _PROMPTS.items()
+        }
 
 
 if __name__ == "__main__":

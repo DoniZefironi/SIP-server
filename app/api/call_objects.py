@@ -27,6 +27,7 @@ from app.services.savtassist import (
     SavtAssist,
     SavtAssistError,
 )
+from app.services.voice_answers import is_relevant_answer
 from app.services.voice_bot import (
     MAX_QUESTION_BYTES,
     MAX_VOICE_TURN_BYTES,
@@ -136,7 +137,10 @@ async def answer_question(
         result = await client.answer_question(request)
     except SavtAssistError as error:
         raise HTTPException(502, str(error)) from None
-    if result.answer is not None and answer_requires_operator(result.answer):
+    if result.answer is not None and (
+        answer_requires_operator(result.answer)
+        or not is_relevant_answer(request.question, result.answer)
+    ):
         return QuestionAnswer(status="needs_operator")
     return result
 
@@ -232,14 +236,17 @@ async def _process_audio(
             looked_up = perf_counter()
             if result.answer is None:
                 log.info(
-                    "voice turn operator stt_ms=%d knowledge_ms=%d",
+                    "voice turn no_answer stt_ms=%d knowledge_ms=%d",
                     (recognized - started) * 1000,
                     (looked_up - recognized) * 1000,
                 )
-                return VoiceTurn(status="operator"), b""
+                return VoiceTurn(status="no_answer"), b""
             if answer_requires_operator(result.answer):
                 log.info("voice turn urgent_operator reason=knowledge_answer")
                 return VoiceTurn(status="urgent_operator"), b""
+            if not is_relevant_answer(question, result.answer):
+                log.info("voice turn no_answer reason=knowledge_mismatch")
+                return VoiceTurn(status="no_answer"), b""
 
             audio = await speech.synthesize(result.answer)
             log.info(

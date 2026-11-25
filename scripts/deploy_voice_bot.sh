@@ -70,7 +70,7 @@ docker compose cp "app:/tmp/$phrase_dir/." "$work/" </dev/null
 
 prompts="bot_question bot_feedback bot_question_afterhours bot_feedback_afterhours
 bot_ask_question bot_reference_found bot_reference_unavailable bot_retry bot_retry_long bot_wait
-bot_emergency bot_urgent_operator"
+bot_emergency bot_urgent_operator bot_no_answer"
 for prompt in $prompts; do
   if [[ ! -s "$work/$prompt.wav" ]]; then
     echo "Отсутствует $prompt.wav." >&2

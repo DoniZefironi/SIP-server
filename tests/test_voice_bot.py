@@ -9,6 +9,7 @@ import pytest
 
 from app.config import Settings, get_settings
 from app.main import app
+from app.services.voice_answers import is_relevant_answer
 from app.services.voice_bot import spoken_reference
 from app.services.voice_safety import safety_route
 
@@ -69,6 +70,22 @@ def test_spoken_reference_preserves_groups_without_guessing_kind(text, number, k
 )
 def test_voice_safety_routes_hazards_without_treating_indicators_as_fire(text, status):
     assert safety_route(text) == status
+
+
+def test_profile_answer_must_match_the_requested_field_and_action():
+    question = "Как поставить аватарку?"
+    assert not is_relevant_answer(question, "В настройках профиля поменяйте имя.")
+    assert not is_relevant_answer(question, "Фото можно прикрепить к документу.")
+    assert not is_relevant_answer(question, "Аватарка отображается в профиле.")
+    assert is_relevant_answer(question, "В настройках профиля загрузите фото профиля.")
+    assert is_relevant_answer(question, "В приложении нельзя поменять аватарку.")
+    assert is_relevant_answer(
+        "Как поменять имя?", "В приложении Savt Assist обновите имя в настройках профиля."
+    )
+    assert is_relevant_answer(
+        "Как поменять имя?", "Проверьте настройки профиля, чтобы исправить имя."
+    )
+    assert not is_relevant_answer("Где открыть инструкцию?", "В базе нет точного ответа.")
 
 
 @pytest.mark.parametrize(
@@ -246,3 +263,41 @@ async def test_safety_prioritizes_emergency_over_lookup_and_faq(monkeypatch, sta
         transcript = "Пахнет гарью из щита."
         result = await api.post("/internal/telephony/voice-turn", headers=_HEADERS, json=payload)
         assert result.json() == {"status": "urgent_operator"}
+
+
+@pytest.mark.parametrize("answer", [
+    None,
+    "В настройках профиля можно поменять имя.",
+    "Прикрепите фотографию к документу в приложении.",
+    "К сожалению, у меня нет информации об аватарке.",
+])
+async def test_voice_bot_uses_no_answer_prompt_for_unanswered_avatar_question(monkeypatch, answer):
+    real_client = httpx.AsyncClient
+    visited = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        visited.append(request.url.host)
+        if request.url.host == "stt.api.cloud.yandex.net":
+            return httpx.Response(200, json={"result": "Как поменять аватарку?"})
+        assert request.url.host == "helper.savt.by"
+        return httpx.Response(200, json={
+            "status": "answered" if answer else "needs_operator", "answer": answer,
+        })
+
+    monkeypatch.setattr(
+        "app.api.call_objects.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(provider), **kwargs),
+    )
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_settings,
+        lambda: Settings(savtassist_api_secret="test-secret", speechkit_api_key="test-key"),
+    )
+    payload = {"audio": base64.b64encode(_wav(_PCM)).decode(), "stage": "question"}
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        response = await api.post("/internal/telephony/voice-turn", headers=_HEADERS, json=payload)
+    assert response.status_code == 200
+    assert response.json() == {"status": "no_answer"}
+    assert visited == ["stt.api.cloud.yandex.net", "helper.savt.by"]
