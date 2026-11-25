@@ -81,6 +81,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.bitrix_enabled:
         bitrix_task = asyncio.create_task(run_bitrix_delivery(settings), name="bitrix-delivery")
 
+    app.state.voice_http = httpx.AsyncClient(
+        timeout=5, limits=httpx.Limits(keepalive_expiry=60)
+    )
     try:
         yield
     finally:
@@ -98,6 +101,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     await task
         if directory_http is not None:
             await directory_http.aclose()
+        await app.state.voice_http.aclose()
+        del app.state.voice_http
         await engine.dispose()
 
 

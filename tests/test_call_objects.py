@@ -1,4 +1,7 @@
+import base64
+import io
 import json
+import wave
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -24,11 +27,13 @@ _MATCH = {
 }
 
 
-async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch) -> None:
+@pytest.mark.parametrize("spoken", [False, True])
+async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch, spoken) -> None:
     engine = create_engine("sqlite://")
     real_http_client = httpx.AsyncClient
     provider_requests = []
     provider_reply = {"status": "found", "match": _MATCH}
+    transcript = "Номер шкафа 25 125 2"
 
     with engine.connect() as connection:
         with connection.begin():
@@ -52,6 +57,10 @@ async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch) 
             )
 
         def provider(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "stt.api.cloud.yandex.net":
+                return httpx.Response(200, json={"result": transcript})
+            if request.url.host == "tts.api.cloud.yandex.net":
+                return httpx.Response(200, content=b"\x01\x00")
             provider_requests.append(request)
             if provider_reply is None:
                 return httpx.Response(500)
@@ -66,7 +75,9 @@ async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch) 
             app.dependency_overrides,
             get_settings,
             lambda: Settings(
-                savtassist_base_url="https://helper.savt.by", savtassist_api_secret="test-secret"
+                savtassist_base_url="https://helper.savt.by",
+                savtassist_api_secret="test-secret",
+                speechkit_api_key="speechkit-test-key",
             ),
         )
 
@@ -77,10 +88,38 @@ async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch) 
             assert not provider_requests
 
             payload = {"number": "25_125_2", "kind": "cabinet"}
-            response = await api.post(_PATH, headers=_HEADERS, json=payload)
-            assert response.status_code == 200
             expected = {"number": "25_125_2", "status": "found", "match": _MATCH}
-            assert response.json() == expected
+            if spoken:
+                buffer = io.BytesIO()
+                with wave.open(buffer, "wb") as wav:
+                    wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+                    wav.writeframes(b"\x01\x00" * 8000)
+                audio = base64.b64encode(buffer.getvalue()).decode()
+                voice_path = "/internal/telephony/voice-turn"
+                body = {"audio": audio, "stage": "reference", "linkedid": "123.4"}
+                candidate = await api.post(voice_path, headers=_HEADERS, json=body)
+                assert candidate.status_code == 200
+                assert candidate.json()["status"] == "confirm_reference"
+                assert candidate.json()["reference"] == payload
+                assert not provider_requests
+                with connection.begin():
+                    assert connection.scalar(select(Call.object_lookup)) is None
+
+                body.update(stage="confirm_reference", reference=payload)
+                transcript = "Нет."
+                rejected = await api.post(voice_path, headers=_HEADERS, json=body)
+                assert rejected.json() == {"status": "ask_question"}
+                assert not provider_requests
+
+                transcript = "Да, верно."
+                response = await api.post(voice_path, headers=_HEADERS, json=body)
+                assert response.json() == {"status": "reference_found"}
+                with connection.begin():
+                    assert connection.scalar(select(Call.object_lookup)) == expected
+            else:
+                response = await api.post(_PATH, headers=_HEADERS, json=payload)
+                assert response.json() == expected
+            assert response.status_code == 200
             assert len(provider_requests) == 1
             outbound = provider_requests[0]
             assert str(outbound.url) == "https://helper.savt.by/internal/telephony/resolve-object"
@@ -88,7 +127,11 @@ async def test_lookup_persists_confirmed_reference_for_active_call(monkeypatch) 
             assert json.loads(outbound.content) == payload
 
             provider_reply = None
-            assert (await api.post(_PATH, headers=_HEADERS, json=payload)).status_code == 502
+            if spoken:
+                unavailable = await api.post(voice_path, headers=_HEADERS, json=body)
+                assert unavailable.json() == {"status": "reference_unavailable"}
+            else:
+                assert (await api.post(_PATH, headers=_HEADERS, json=payload)).status_code == 502
             with connection.begin():
                 assert connection.scalar(select(Call.object_lookup)) == expected
                 connection.execute(update(Call).values(ended_at=datetime.now(UTC)))
