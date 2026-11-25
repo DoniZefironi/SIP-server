@@ -20,6 +20,7 @@ class Direction(StrEnum):
 
 class Outcome(StrEnum):
     ANSWERED = "answered"
+    BOT_ANSWERED = "bot_answered"
     MESSAGE_AFTERHOURS = "message_afterhours"
     MESSAGE_QUEUE_FULL = "message_queue_full"
     MESSAGE_NO_ANSWER = "message_no_answer"
@@ -92,6 +93,8 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
                 call.sector_by_default = True
             case "sector":
                 call.sector = _int(message.get("Sector"))
+            case "bot_answered":
+                call.outcome = Outcome.BOT_ANSWERED
             case "queue_exit":
                 full = message.get("Status") == "FULL"
                 call.message_reason = "queue_full" if full else "no_answer"

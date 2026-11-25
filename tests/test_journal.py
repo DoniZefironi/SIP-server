@@ -94,6 +94,20 @@ def test_after_hours_message() -> None:
     assert call.sector is None
 
 
+@pytest.mark.parametrize("sector", [None, "2"])
+def test_bot_answer_is_a_distinct_incoming_outcome(sector: str | None) -> None:
+    events = [stage("start", Number="+375291234567")]
+    if sector is not None:
+        events.append(stage("sector", Sector=sector))
+    call = run(*events, stage("bot_answered"), hangup())
+    assert call.direction == Direction.INCOMING
+    assert call.outcome == Outcome.BOT_ANSWERED
+    assert call.sector == (int(sector) if sector is not None else None)
+    assert call.answered_by is None
+    assert call.message_file is None
+    assert call.ended_at is not None
+
+
 def test_blocked_number() -> None:
     call = run(stage("blocked", Number="375297654321"), hangup())
     assert call.outcome == Outcome.BLOCKED
