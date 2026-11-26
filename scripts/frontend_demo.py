@@ -163,6 +163,7 @@ def main() -> None:
         TELEPHONY_YANDEXGPT_ENABLED="false",
         TELEPHONY_BITRIX_ENABLED="false",
         TELEPHONY_BITRIX_DIRECTORY_ENABLED="false",
+        TELEPHONY_BITRIX_CONTACTS_ENABLED="false",
         TELEPHONY_SECTOR_NUMBERS='{"1": "+12025550150", "4": "+12025550153"}',
         TELEPHONY_EMPLOYEE_NAMES='{"PJSIP/101": "Ирина Морозова", "PJSIP/104": "Алексей Волков"}',
     )

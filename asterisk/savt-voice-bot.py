@@ -256,7 +256,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                     history.clear()
                     retries = 0
                     stage, reference = "question", None
-                    prompt = phrases / "bot_no_answer"
+                    prompt = phrases / f"bot_no_answer{suffix}"
                     continue
                 case "operator":
                     return "operator"

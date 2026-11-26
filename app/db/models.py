@@ -18,7 +18,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -69,6 +69,16 @@ class AuthLoginLimit(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     attempts: Mapped[int] = mapped_column(Integer)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class BitrixContact(Base):
+    __tablename__ = "bitrix_contacts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(Text)
+    phones: Mapped[list[str]] = mapped_column(ARRAY(String(20)))
+    skip_bot: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class CallEvent(Base):

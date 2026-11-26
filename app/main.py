@@ -13,11 +13,12 @@ from fastapi.responses import JSONResponse
 from app.ami.astdb import AstDB
 from app.ami.client import AmiClient
 from app.ami.events import store_event
-from app.api import auth, call_objects, calls, departments, events, health, statistics
+from app.api import auth, call_objects, calls, contacts, departments, events, health, statistics
 from app.api import settings as station_api
 from app.config import get_settings
 from app.db.session import engine
 from app.services.bitrix import Bitrix
+from app.services.bitrix_contacts import ContactRouting, run_contact_import
 from app.services.bitrix_delivery import run_bitrix_delivery
 from app.services.department_directory import DepartmentDirectory
 from app.services.department_routes import DepartmentRoutes
@@ -39,7 +40,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ami = None
     app.state.department_routes = None
     app.state.station_settings = None
+    app.state.contact_routing = None
     ami_task: asyncio.Task[None] | None = None
+    contact_routing_task: asyncio.Task[None] | None = None
     if settings.ami_enabled:
         client = AmiClient(
             settings.ami_host,
@@ -54,10 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.department_routes = DepartmentRoutes(client)
         app.state.station_settings = StationSettings(AstDB(client))
         ami_task = asyncio.create_task(client.run(), name="ami")
+        app.state.contact_routing = ContactRouting(AstDB(client))
+        contact_routing_task = asyncio.create_task(
+            app.state.contact_routing.run(), name="contact-routing",
+        )
 
     app.state.department_directory = None
     app.state.bitrix = None
     bitrix_http = None
+    contact_import_task: asyncio.Task[None] | None = None
     webhook = settings.bitrix_webhook_url.get_secret_value().strip()
     if webhook:
         bitrix_http = httpx.AsyncClient(timeout=10)
@@ -65,6 +73,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.bitrix = Bitrix(bitrix_http, webhook)
             if settings.bitrix_directory_enabled:
                 app.state.department_directory = DepartmentDirectory(app.state.bitrix)
+            if settings.bitrix_contacts_enabled:
+                contact_import_task = asyncio.create_task(
+                    run_contact_import(app.state.bitrix), name="bitrix-contacts",
+                )
         except ValueError:
             logging.getLogger(__name__).warning("Некорректный вебхук Bitrix24")
 
@@ -95,6 +107,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         for task in (
+            contact_import_task,
+            contact_routing_task,
             ami_task,
             maintenance_task,
             recording_task,
@@ -121,6 +135,7 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/auth")
 app.include_router(events.router, prefix="/api", dependencies=[Depends(auth.admin)])
 app.include_router(calls.router, prefix="/api", dependencies=[Depends(auth.principal)])
+app.include_router(contacts.router, prefix="/api", dependencies=[Depends(auth.manager)])
 app.include_router(statistics.router, prefix="/api", dependencies=[Depends(auth.principal)])
 app.include_router(departments.router, prefix="/api", dependencies=[Depends(auth.principal)])
 app.include_router(station_api.router, prefix="/api", dependencies=[Depends(auth.manager)])

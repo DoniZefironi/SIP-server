@@ -26,7 +26,7 @@ async def test_private_routes_reject_anonymous_requests():
             "/api/calls/1/contacts",
             "/api/statistics/calls?date_from=2026-11-25T00:00Z&date_to=2026-11-26T00:00Z",
             "/api/statistics/callers?date_from=2026-11-25T00:00Z&date_to=2026-11-26T00:00Z",
-            "/api/departments", "/api/departments/25", "/api/settings/telephony",
+            "/api/departments", "/api/departments/25", "/api/contacts", "/api/settings/telephony",
             "/api/settings/holidays", "/api/events", "/api/auth/users", "/docs", "/openapi.json",
         ):
             response = await api.get(path)
@@ -46,6 +46,7 @@ async def test_viewer_cannot_write_and_manager_cannot_administer(monkeypatch):
         profile = (await api.get("/api/auth/me")).json()
         assert profile["role"] == "viewer" and "password_hash" not in profile
         assert (await api.get("/api/settings/telephony")).status_code == 403
+        assert (await api.get("/api/contacts")).status_code == 403
         assert (await api.delete("/api/departments/25/settings")).status_code == 403
         account.role = "manager"
         assert (await api.get("/api/auth/users")).status_code == 403

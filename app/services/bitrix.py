@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -159,6 +160,29 @@ class Bitrix:
         if not isinstance(ids, list):
             raise BitrixError("Bitrix24 вернул неверный результат поиска по телефону")
         return sorted({number for value in ids if (number := positive_id(value)) is not None})
+
+    async def contact_pages(self) -> AsyncIterator[list[dict[str, Any]]]:
+        after_id = 0
+        while True:
+            body = await self._call("crm.item.list", {
+                "entityTypeId": _ENTITY_TYPES["contact"],
+                # crm.item.list возвращает многозначные телефоны fm только при select *.
+                "select": ["*"],
+                "filter": {">id": after_id},
+                "order": {"id": "ASC"},
+                "start": 0,
+            })
+            page = _items(body)
+            if not page:
+                if body.get("next"):
+                    raise BitrixError("Bitrix24 вернул пустую промежуточную страницу контактов")
+                return
+            for item in page:
+                item_id = positive_id(item.get("id"))
+                if item_id is None or item_id <= after_id:
+                    raise BitrixError("Bitrix24 вернул неверный порядок контактов")
+                after_id = item_id
+            yield page
 
     def card_url(self, kind: str, card_id: int) -> str:
         return str(self._portal.copy_with(path=f"/crm/{kind}/details/{card_id}/"))

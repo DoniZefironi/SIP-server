@@ -79,6 +79,27 @@ active = replace_context(
     active, "sub-record-incoming", source[source_start:source_end], allow_missing=True,
 )
 
+start, end = context_bounds(active, "reception")
+reception = active[start:end]
+source_start, source_end = context_bounds(source, "reception")
+skip_steps = [
+    line for line in source[source_start:source_end].splitlines(keepends=True)
+    if b"SAVT_SKIP_BOT" in line
+]
+if not any(b"savt-skip-bot/" in line for line in skip_steps):
+    raise SystemExit("В исходном dialplan не найден маршрут пропуска бота.")
+separator = b"\r\n" if b"\r\n" in reception else b"\n"
+skip_block = b"".join(skip_steps).replace(b"\n", separator)
+if skip_block not in reception:
+    start_events = list(re.finditer(
+        rb"(?m)^[ \t]*same[ \t]*=>[ \t]*n,UserEvent\(SavtCall,Stage: start,[^\r\n]+\r?\n",
+        reception,
+    ))
+    if b"SAVT_SKIP_BOT" in reception or len(start_events) != 1:
+        raise SystemExit("Не удалось добавить пропуск бота. Сверьте рабочий [reception].")
+    position = start + start_events[0].end()
+    active = active[:position] + skip_block + active[position:]
+
 start, end = context_bounds(active, "sector")
 sector = active[start:end]
 source_start, source_end = context_bounds(source, "sector")
@@ -115,7 +136,7 @@ docker compose cp "app:/tmp/$phrase_dir/." "$work/" </dev/null
 
 prompts="bot_question bot_feedback bot_question_afterhours bot_feedback_afterhours
 bot_ask_question bot_reference_found bot_reference_unavailable bot_retry bot_retry_long bot_wait
-bot_emergency bot_urgent_operator bot_no_answer"
+bot_emergency bot_urgent_operator bot_no_answer bot_no_answer_afterhours"
 for prompt in $prompts; do
   if [[ ! -s "$work/$prompt.wav" ]]; then
     echo "Отсутствует $prompt.wav." >&2
@@ -168,6 +189,7 @@ mv -fT -- "$candidate" "$extensions"
 
 if ! timeout 10s asterisk -rx 'dialplan reload' ||
    ! timeout 5s asterisk -rx 'dialplan show voice-bot-pilot' | grep -F "$agi_file" ||
+   ! timeout 5s asterisk -rx 'dialplan show reception' | grep -F 'savt-skip-bot/' ||
    ! timeout 5s asterisk -rx 'dialplan show sub-record-incoming' | grep -F 'MixMonitor(' ||
    ! timeout 5s asterisk -rx 'dialplan show sector' | grep -F 'Gosub(sub-record-incoming,s,1(b))'; then
   cp -p -- "$backup" "$candidate"

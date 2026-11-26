@@ -13,6 +13,7 @@ os.environ["TELEPHONY_SPEECHKIT_ENABLED"] = "false"
 os.environ["TELEPHONY_YANDEXGPT_ENABLED"] = "false"
 os.environ["TELEPHONY_BITRIX_ENABLED"] = "false"
 os.environ["TELEPHONY_BITRIX_DIRECTORY_ENABLED"] = "false"
+os.environ["TELEPHONY_BITRIX_CONTACTS_ENABLED"] = "false"
 
 
 @pytest.fixture
