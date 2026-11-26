@@ -359,3 +359,62 @@ async def test_voice_turn_handles_fillers_and_chat_in_phone_context(monkeypatch)
     assert spoken[0] == spoken[1]
     assert "разговариваем по телефону" in spoken[0]
     assert spoken[2:] == [requested_instructions]
+
+
+async def test_voice_bot_prepares_only_meaningful_questions_before_looking_up_answers(
+    monkeypatch,
+):
+    real_client = httpx.AsyncClient
+    spoken = iter((
+        "Алло", "Попа", "Привет", "Здрасте", "Алло, привет, ну так", "Оператор",
+        "Шкаф горит", "Где инструкция", "Шкаф не включается", "Меня зовут Иван",
+    ))
+    outbound = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        outbound.append(host)
+        if host == "stt.api.cloud.yandex.net":
+            return httpx.Response(200, json={"result": next(spoken)})
+        if host == "helper.savt.by":
+            assert json.loads(request.content) == {"question": "Где инструкция"}
+            return httpx.Response(200, json={"status": "answered", "answer": _ANSWER})
+        assert host == "tts.api.cloud.yandex.net"
+        return httpx.Response(200, content=_PCM)
+
+    monkeypatch.setattr(
+        "app.api.call_objects.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(provider), **kwargs),
+    )
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_settings,
+        lambda: Settings(savtassist_api_secret="test-secret", speechkit_api_key="test-key"),
+    )
+    payload = {"audio": base64.b64encode(_wav(_PCM)).decode(), "prepare_question": True}
+    path = "/internal/telephony/voice-turn"
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        for status in ("repeat", "repeat", "repeat", "repeat", "repeat", "operator", "emergency"):
+            turn = await api.post(path, headers=_HEADERS, json=payload)
+            assert turn.json() == {"status": status}
+
+        for question, thinking in (
+            ("Где инструкция", True), ("Шкаф не включается", True), ("Меня зовут Иван", False),
+        ):
+            turn = await api.post(path, headers=_HEADERS, json=payload)
+            assert turn.json() == {
+                "status": "question_ready", "question": question, "thinking": thinking,
+            }
+        assert outbound == ["stt.api.cloud.yandex.net"] * 10
+
+        answer = await api.post(
+            "/internal/telephony/voice-answer",
+            headers={"X-Telephony-Secret": "test-secret"},
+            json={"question": "Где инструкция"},
+        )
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["exchange"] == {"question": "Где инструкция", "answer": _ANSWER}
+        assert base64.b64decode(answer.json()["audio"]) == _wav(_PCM)
+    assert outbound[-2:] == ["helper.savt.by", "tts.api.cloud.yandex.net"]

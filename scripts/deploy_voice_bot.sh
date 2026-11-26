@@ -142,7 +142,10 @@ buffer = io.BytesIO()
 with wave.open(buffer, "wb") as audio:
     audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
     audio.writeframes(bytes(320))
-body = json.dumps({"audio": base64.b64encode(buffer.getvalue()).decode("ascii")})
+body = json.dumps({
+    "audio": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    "prepare_question": True,
+})
 with closing(HTTPConnection("127.0.0.1", 8000, timeout=5)) as connection:
     connection.request(
         "POST", "/internal/telephony/voice-turn", body=body,

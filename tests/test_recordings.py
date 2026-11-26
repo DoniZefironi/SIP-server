@@ -67,7 +67,7 @@ def test_transcription_uses_aligned_channels_and_falls_back_to_mix(tmp_path: Pat
         assert stereo.readframes(2) == b"\x01\x02\x05\x06\x03\x04\x00\x00"
 
 
-def test_bot_recording_queues_transcription_only(tmp_path: Path) -> None:
+def test_bot_recording_is_queued_with_bitrix_routing_skipped(tmp_path: Path) -> None:
     path = tmp_path / "conversation.wav"
     write_wav(path, b"\x00\x01" * 16)
     stem = str(path.with_suffix(""))
@@ -82,13 +82,11 @@ def test_bot_recording_queues_transcription_only(tmp_path: Path) -> None:
         {
             "call_id": 1,
             "audio_kind": "mix",
-            "summary_status": "skipped",
             "bitrix_routing_status": "skipped",
         },
         {
             "call_id": 2,
             "audio_kind": "mix",
-            "summary_status": "pending",
             "bitrix_routing_status": "pending",
         },
     ]

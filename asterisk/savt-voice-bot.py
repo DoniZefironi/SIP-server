@@ -25,7 +25,9 @@ SAMPLE_RATE = 8000
 FRAME_BYTES = 320  # 20 мс моно, 16 бит.
 SPEECH_LEVEL = 192
 START_SILENCE_SECONDS = 5
-END_SILENCE_SECONDS = 2
+END_SILENCE_SECONDS = 1.1
+THINKING_DELAY_SECONDS = 0.25
+TURN_TIMEOUT_SECONDS = 17
 MAX_SPEECH_BYTES = 29 * SAMPLE_RATE * 2
 MAX_ANSWER_BYTES = 2_000_044
 MAX_RESPONSE_BYTES = 2_700_000
@@ -151,25 +153,27 @@ def listen(digits: str, answered: bool) -> tuple[str | None, bytes]:
     return None, utterance.audio()
 
 
-def fetch_turn(secret: str, question: bytes, context: dict, wait_file: Path) -> dict:
-    payload = json.dumps({
-        "audio": base64.b64encode(question).decode("ascii"),
-        **context,
-    }, ensure_ascii=False).encode()
-    with closing(HTTPConnection("127.0.0.1", 8000, timeout=17)) as connection:
+def _request_turn(
+    secret: str, endpoint: str, data: dict, deadline: float, wait_file: Path | None = None,
+) -> dict:
+    payload = json.dumps(data, ensure_ascii=False).encode()
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Истекло время ожидания ответа бота")
+    with closing(HTTPConnection("127.0.0.1", 8000, timeout=remaining)) as connection:
         connection.request(
             "POST",
-            "/internal/telephony/voice-turn",
+            endpoint,
             body=payload,
             headers={"Content-Type": "application/json", "X-Telephony-Secret": secret},
         )
-        if connection.sock is not None:
-            readable, _, _ = select([connection.sock], [], [], 0)
+        if wait_file is not None and connection.sock is not None:
+            readable, _, _ = select([connection.sock], [], [], THINKING_DELAY_SECONDS)
             if not readable:
-                history = context["history"]
-                choice = _choice(_play(wait_file, "012" if history else "02"), bool(history))
-                if choice in ("operator", "answered"):
-                    return {"status": "operator" if choice == "operator" else "done"}
+                answered = bool(data["history"])
+                choice = _choice(_play(wait_file, "012" if answered else "02"), answered)
+                if choice is not None:
+                    return {"status": "done" if choice == "answered" else choice}
         with connection.getresponse() as response:
             if response.status != 200:
                 raise RuntimeError(f"API голосового бота вернул HTTP {response.status}")
@@ -179,10 +183,26 @@ def fetch_turn(secret: str, question: bytes, context: dict, wait_file: Path) -> 
     result = json.loads(body)
     if not isinstance(result, dict) or result.get("status") not in (
         "answered", "operator", "done", "repeat", "emergency", "urgent_operator", "no_answer",
-        "confirm_reference", *REFERENCE_PROMPTS,
+        "confirm_reference", "question_ready", *REFERENCE_PROMPTS,
     ):
         raise RuntimeError("API голосового бота вернул неизвестный результат")
     return result
+
+
+def fetch_turn(secret: str, audio: bytes, context: dict, wait_file: Path) -> dict:
+    deadline = monotonic() + TURN_TIMEOUT_SECONDS
+    turn = _request_turn(secret, "/internal/telephony/voice-turn", {
+        **context, "audio": base64.b64encode(audio).decode("ascii"), "prepare_question": True,
+    }, deadline)
+    if turn["status"] != "question_ready":
+        return turn
+
+    question = turn.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise RuntimeError("API не вернул распознанный вопрос")
+    return _request_turn(secret, "/internal/telephony/voice-answer", {
+        "question": question, "history": context["history"],
+    }, deadline, wait_file if turn.get("thinking") is True else None)
 
 
 def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> str:
@@ -223,6 +243,8 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                 agi(f'EXEC UserEvent "SavtCall,Stage: bot_answered,Linkedid: {linkedid}"')
                 reported = True
             match turn["status"]:
+                case "hangup":
+                    return "hangup"
                 case "emergency":
                     if _play(phrases / "bot_emergency", "") >= 0:
                         return "emergency"

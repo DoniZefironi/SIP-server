@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import get_settings
-from app.services.savtassist import ObjectKind, ObjectLookupRequest
+from app.services.savtassist import ObjectKind, ObjectLookupRequest, QuestionRequest
 
 MAX_QUESTION_BYTES = 256_000
 VOICE_RECORDING_SECONDS = 29
@@ -40,7 +40,7 @@ _PROMPTS = {
     "bot_ask_question": "Хорошо, задайте ваш вопрос.",
     "bot_reference_found": "Спасибо, нашла номер. Задайте ваш вопрос.",
     "bot_reference_unavailable": "Не удалось найти номер. Задайте вопрос, я попробую помочь.",
-    "bot_retry": "Я слушаю. Продолжайте после сигнала.",
+    "bot_retry": "Да, я слушаю. Чем могу помочь?",
     "bot_retry_long": "Сформулируйте вопрос короче, пожалуйста.",
     "bot_wait": "Тактактак",
     "bot_no_answer": (
@@ -65,8 +65,14 @@ _DONE = {
     "вопрос решен", "спасибо вопрос решен", "ответ помог", "все ясно", "все понятно",
     "спасибо все понятно", "спасибо все ясно", "вопросов больше нет", "до свидания",
 }
-_GREETING = {"алло", "алло алло", "здравствуйте", "добрый день", "добрый вечер", "привет"}
+_GREETING = {"алло", "здравствуйте", "здравствуй", "здрасте", "здрасьте", "привет"}
 _FILLER = re.compile(r"(?:та+к)+|эм+|м+|э+|ну|угу")
+_SHORT_FOLLOWUPS = {"когда", "где", "почему", "зачем", "куда", "откуда", "сколько", "как"}
+_QUESTION_WORDS = re.compile(
+    r"\b(?:где|куда|откуда|когда|почему|зачем|сколько|кто|что|чем|как\w*|можно|ли"
+    r"|помогите|помощь|подскаж\w*|объясните|расскажите|покажите|скажите)\b"
+    r"|\bне (?:могу|получается|работает|запускается|включается|открывается)\b"
+)
 _FOLLOWUP = re.compile(
     r"\b(?:ее|его|их|там|туда|это|этот|эту|эта|эти|этого|этой|этом)\b"
     r"|^(?:а )?(?:что дальше|как дальше|где именно|куда именно|как именно)$"
@@ -115,6 +121,7 @@ class VoiceTurnRequest(BaseModel):
     stage: Literal["reference", "confirm_reference", "question"] = "question"
     reference: VoiceReference | None = None
     linkedid: str | None = Field(default=None, min_length=1, max_length=64)
+    prepare_question: bool = False
 
     @model_validator(mode="after")
     def require_reference_for_confirmation(self) -> "VoiceTurnRequest":
@@ -123,14 +130,21 @@ class VoiceTurnRequest(BaseModel):
         return self
 
 
+class VoiceAnswerRequest(QuestionRequest):
+    history: list[VoiceExchange] = Field(default_factory=list, max_length=2)
+
+
 class VoiceTurn(BaseModel):
     status: Literal[
         "answered", "operator", "done", "repeat", "emergency", "urgent_operator", "no_answer",
         "confirm_reference", "reference_found", "reference_unavailable", "ask_question",
+        "question_ready",
     ]
     audio: str | None = None
     exchange: VoiceExchange | None = None
     reference: VoiceReference | None = None
+    question: str | None = None
+    thinking: bool | None = None
 
 
 def _normalized_words(text: str) -> str:
@@ -140,7 +154,9 @@ def _normalized_words(text: str) -> str:
 
 def voice_intent(text: str) -> Literal["question", "operator", "done", "repeat"]:
     words = _normalized_words(text)
-    if not words or words in _GREETING or all(_FILLER.fullmatch(word) for word in words.split()):
+    if words in {"добрый день", "добрый вечер", "доброе утро"} or all(
+        word in _GREETING or _FILLER.fullmatch(word) for word in words.split()
+    ):
         return "repeat"
     command = words.removeprefix("алло ").removeprefix("да ").removeprefix("нет ")
     if _OPERATOR.fullmatch(command):
@@ -148,6 +164,18 @@ def voice_intent(text: str) -> Literal["question", "operator", "done", "repeat"]
     if command in _DONE:
         return "done"
     return "question"
+
+
+def has_spoken_question(text: str, history: list[VoiceExchange]) -> bool:
+    words = _normalized_words(text)
+    content = [
+        word for word in words.split() if word not in _GREETING and not _FILLER.fullmatch(word)
+    ]
+    return len(content) > 1 or (bool(history) and words in _SHORT_FOLLOWUPS)
+
+
+def needs_thinking_prompt(text: str) -> bool:
+    return text.endswith("?") or bool(_QUESTION_WORDS.search(_normalized_words(text)))
 
 
 def skips_reference(text: str) -> bool:
@@ -219,7 +247,8 @@ def reference_confirmation(reference: VoiceReference) -> str:
 
 
 def question_with_history(question: str, history: list[VoiceExchange]) -> str:
-    if not history or not _FOLLOWUP.search(_normalized_words(question)):
+    words = _normalized_words(question)
+    if not history or (words not in _SHORT_FOLLOWUPS and not _FOLLOWUP.search(words)):
         return question
     current = f"Текущий вопрос: {question}"
     if len(current) >= 2000:

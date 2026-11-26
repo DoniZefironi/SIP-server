@@ -25,12 +25,11 @@ def _ready_jobs(calls: Sequence[Call], root: Path) -> list[dict[str, int | str]]
     for call in calls:
         kind: AudioKind = "mix" if call.outcome in _CONVERSATION_OUTCOMES else "message"
         if ready_recording(call, kind, root) is not None:
-            followup_status = "skipped" if call.outcome == Outcome.BOT_ANSWERED else "pending"
+            bitrix_status = "skipped" if call.outcome == Outcome.BOT_ANSWERED else "pending"
             jobs.append({
                 "call_id": call.id,
                 "audio_kind": kind,
-                "summary_status": followup_status,
-                "bitrix_routing_status": followup_status,
+                "bitrix_routing_status": bitrix_status,
             })
     return jobs
 

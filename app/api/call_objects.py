@@ -6,6 +6,7 @@ import logging
 import struct
 import wave
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from time import perf_counter
 from typing import Annotated
 
@@ -34,11 +35,14 @@ from app.services.voice_bot import (
     MAX_VOICE_WAV_BYTES,
     VOICE_RECORDING_SECONDS,
     SpeechKitVoice,
+    VoiceAnswerRequest,
     VoiceError,
     VoiceExchange,
     VoiceTurn,
     VoiceTurnRequest,
     confirms_reference,
+    has_spoken_question,
+    needs_thinking_prompt,
     question_pcm,
     question_with_history,
     reference_confirmation,
@@ -205,6 +209,50 @@ async def _reference_turn(
     return None
 
 
+@asynccontextmanager
+async def _voice_deadline() -> AsyncIterator[None]:
+    try:
+        async with asyncio.timeout(15):
+            yield
+    except (VoiceError, SavtAssistError) as error:
+        raise HTTPException(502, str(error)) from None
+    except ValidationError:
+        raise HTTPException(502, "Некорректный результат распознавания") from None
+    except TimeoutError:
+        raise HTTPException(504, "Истекло время ожидания ответа бота") from None
+
+
+async def _spoken_answer(
+    question: str, history: list[VoiceExchange], client: SavtAssist, speech: SpeechKitVoice,
+) -> tuple[VoiceTurn, bytes]:
+    started = perf_counter()
+    answer = phone_channel_answer(question)
+    if answer is None:
+        query = question_with_history(question, history)
+        result = await client.answer_question(QuestionRequest(question=query))
+        answer = result.answer
+    looked_up = perf_counter()
+    if answer is None:
+        log.info("voice turn no_answer knowledge_ms=%d", (looked_up - started) * 1000)
+        return VoiceTurn(status="no_answer"), b""
+    if answer_requires_operator(answer):
+        log.info("voice turn urgent_operator reason=knowledge_answer")
+        return VoiceTurn(status="urgent_operator"), b""
+    if not is_relevant_answer(question, answer):
+        log.info("voice turn no_answer reason=knowledge_mismatch")
+        return VoiceTurn(status="no_answer"), b""
+
+    audio = await speech.synthesize(answer)
+    log.info(
+        "voice turn answered knowledge_ms=%d tts_ms=%d",
+        (looked_up - started) * 1000,
+        (perf_counter() - looked_up) * 1000,
+    )
+    return VoiceTurn(
+        status="answered", exchange=VoiceExchange(question=question[:500], answer=answer),
+    ), audio
+
+
 async def _process_audio(
     pcm: bytes,
     client: SavtAssist,
@@ -212,60 +260,37 @@ async def _process_audio(
     dialogue: VoiceTurnRequest | None = None,
     session: AsyncSession | None = None,
 ) -> tuple[VoiceTurn, bytes]:
-    try:
-        async with asyncio.timeout(15):
-            started = perf_counter()
-            question = await speech.recognize(pcm)
-            recognized = perf_counter()
-            safety = safety_route(question)
-            if safety is not None:
-                log.info("voice turn %s stt_ms=%d", safety, (recognized - started) * 1000)
-                return VoiceTurn(status=safety), b""
-            intent = voice_intent(question)
-            if intent != "question":
-                return VoiceTurn(status=intent), b""
-            if dialogue is not None and dialogue.stage != "question" and session is not None:
-                reference_turn = await _reference_turn(question, dialogue, client, speech, session)
-                if reference_turn is not None:
-                    return reference_turn
+    async with _voice_deadline():
+        started = perf_counter()
+        question = await speech.recognize(pcm)
+        recognized = perf_counter()
+        safety = safety_route(question)
+        log.info("voice turn %s stt_ms=%d", safety or "recognized", (recognized - started) * 1000)
+        if safety is not None:
+            return VoiceTurn(status=safety), b""
+        intent = voice_intent(question)
+        if intent != "question":
+            return VoiceTurn(status=intent), b""
+        if dialogue is not None and dialogue.stage != "question" and session is not None:
+            reference_turn = await _reference_turn(question, dialogue, client, speech, session)
+            if reference_turn is not None:
+                return reference_turn
 
-            answer = phone_channel_answer(question)
-            if answer is None:
-                query = question_with_history(question, dialogue.history if dialogue else [])
-                result = await client.answer_question(QuestionRequest(question=query))
-                answer = result.answer
-            looked_up = perf_counter()
-            if answer is None:
-                log.info(
-                    "voice turn no_answer stt_ms=%d knowledge_ms=%d",
-                    (recognized - started) * 1000,
-                    (looked_up - recognized) * 1000,
-                )
-                return VoiceTurn(status="no_answer"), b""
-            if answer_requires_operator(answer):
-                log.info("voice turn urgent_operator reason=knowledge_answer")
-                return VoiceTurn(status="urgent_operator"), b""
-            if not is_relevant_answer(question, answer):
-                log.info("voice turn no_answer reason=knowledge_mismatch")
-                return VoiceTurn(status="no_answer"), b""
-
-            audio = await speech.synthesize(answer)
-            log.info(
-                "voice turn answered stt_ms=%d knowledge_ms=%d tts_ms=%d",
-                (recognized - started) * 1000,
-                (looked_up - recognized) * 1000,
-                (perf_counter() - looked_up) * 1000,
-            )
+        history = dialogue.history if dialogue else []
+        if not has_spoken_question(question, history):
+            return VoiceTurn(status="repeat"), b""
+        if dialogue is not None and dialogue.prepare_question:
             return VoiceTurn(
-                status="answered",
-                exchange=VoiceExchange(question=question[:500], answer=answer),
-            ), audio
-    except (VoiceError, SavtAssistError) as error:
-        raise HTTPException(502, str(error)) from None
-    except ValidationError:
-        raise HTTPException(502, "Некорректный результат распознавания") from None
-    except TimeoutError:
-        raise HTTPException(504, "Истекло время ожидания ответа бота") from None
+                status="question_ready", question=QuestionRequest(question=question).question,
+                thinking=needs_thinking_prompt(question),
+            ), b""
+        return await _spoken_answer(question, history, client, speech)
+
+
+def _with_audio(turn: VoiceTurn, audio: bytes) -> VoiceTurn:
+    if audio:
+        turn.audio = base64.b64encode(audio).decode("ascii")
+    return turn
 
 
 @router.post(
@@ -308,6 +333,22 @@ async def voice_turn(
     except (ValidationError, binascii.Error, ValueError):
         raise HTTPException(422, "Некорректная реплика голосового бота") from None
     turn, audio = await _process_audio(pcm, client, speech, data, session)
-    if audio:
-        turn.audio = base64.b64encode(audio).decode("ascii")
-    return turn
+    return _with_audio(turn, audio)
+
+
+@router.post("/voice-answer", response_model_exclude_none=True)
+async def voice_answer(
+    data: VoiceAnswerRequest,
+    client: Annotated[SavtAssist, Depends(_savtassist)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    http: CloudHTTP,
+) -> VoiceTurn:
+    """Получить озвученный ответ для уже распознанного вопроса."""
+    async with _voice_deadline():
+        safety = safety_route(data.question)
+        if safety is not None:
+            return VoiceTurn(status=safety)
+        turn, audio = await _spoken_answer(
+            data.question, data.history, client, _speechkit(settings, http),
+        )
+        return _with_audio(turn, audio)

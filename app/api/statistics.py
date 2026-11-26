@@ -62,10 +62,11 @@ def _report_conditions(
     date_from: AwareDatetime,
     date_to: AwareDatetime,
     sector: Annotated[int | None, Query(ge=1, le=9)] = None,
+    caller: str | None = None,
 ) -> list[ColumnElement[bool]]:
     if date_from >= date_to:
         raise HTTPException(422, "Начало периода должно предшествовать концу")
-    return history_conditions(sector=sector, date_from=date_from, date_to=date_to)
+    return history_conditions(sector=sector, caller=caller, date_from=date_from, date_to=date_to)
 
 
 @router.get("/calls")
