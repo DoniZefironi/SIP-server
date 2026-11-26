@@ -30,6 +30,10 @@ _CHAT_CLARIFICATION = re.compile(
     r"(?:а )?(?:что (?:такое|значит) чат|что это за чат|что за чат|какой чат"
     r"|(?:в|о) каком чате(?: (?:речь|вы говорите))?|в какой чат(?: мне)? писать)"
 )
+_EQUIPMENT_FAULT = re.compile(
+    r"\b(?:ошибк\w*|сбой|неисправност\w*|не работает|не включается|не запускается)\b"
+)
+_PROFILE_SETTINGS = re.compile(r"\b(?:профил\w*|аватар\w*|личн\w* кабинет\w*)\b")
 
 
 def phone_channel_answer(question: str) -> str | None:
@@ -48,6 +52,9 @@ def is_relevant_answer(question: str, answer: str) -> bool:
     reply = answer.casefold().replace("ё", "е")
     if _NO_ANSWER.search(reply) or (_CHAT.search(reply) and not _CHAT.search(ask)):
         return False
+    if _EQUIPMENT_FAULT.search(ask) and not _PROFILE_SETTINGS.search(ask):
+        if _PROFILE_SETTINGS.search(reply) and not _EQUIPMENT_FAULT.search(reply):
+            return False
     if not _CHANGE.search(ask):
         return True
     requested = [field for field in _FIELDS if field.search(ask)]

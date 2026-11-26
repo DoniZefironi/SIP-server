@@ -102,11 +102,17 @@ async def _poll(job: RecordingJob, call: Call, client: SpeechKit) -> None:
     try:
         if not job.operation_id:
             raise SpeechKitError("Отсутствует идентификатор операции SpeechKit")
+        bot_before_ms = None
+        if call.bot_started_at is not None and call.answered_at is not None:
+            milliseconds = int((call.answered_at - call.bot_started_at).total_seconds() * 1000)
+            if milliseconds > 0:
+                bot_before_ms = milliseconds
         async with asyncio.timeout(_REQUEST_TIMEOUT):
             transcript = await client.poll(
                 job.operation_id,
                 dialogue=job.dialogue_channels,
                 staff_label="Ася" if call.outcome == Outcome.BOT_ANSWERED else "Сотрудник",
+                bot_before_ms=bot_before_ms,
             )
     except TimeoutError:
         _fail_or_retry(job, SpeechKitError("Истекло время ожидания SpeechKit", retryable=True))

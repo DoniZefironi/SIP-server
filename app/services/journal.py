@@ -98,6 +98,8 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
                 None, Outcome.ABANDONED_MENU, Outcome.ABANDONED_QUEUE
             ):
                 call.outcome = Outcome.BOT_ANSWERED
+            case "bot_resolved" if call.outcome == Outcome.BOT_ANSWERED:
+                call.bot_resolved = True
             case "emergency_referred":
                 call.outcome = Outcome.EMERGENCY_REFERRED
             case "queue_exit":
@@ -113,6 +115,10 @@ def apply_event(call: Call | None, message: Message, now: datetime) -> Call | No
             match message.get("UserEvent"):
                 case "SavtRecording":
                     call.recording = message.get("File")
+                    if message.get("Source") == "bot":
+                        call.bot_started_at = call.bot_started_at or now
+                        if call.bot_resolved is None:
+                            call.bot_resolved = False
                 case "SavtRing":
                     call.ring_target = message.get("Target")
                 case "SavtMessage":

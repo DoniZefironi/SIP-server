@@ -2,16 +2,19 @@ import base64
 import io
 import json
 import wave
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
 from app.config import Settings, get_settings
+from app.db.session import get_session
 from app.main import app
 from app.services.voice_answers import is_relevant_answer
-from app.services.voice_bot import spoken_reference
-from app.services.voice_safety import safety_route
+from app.services.voice_bot import embedded_reference, spoken_reference, voice_intent
+from app.services.voice_safety import requires_specialist, safety_route
 
 _PATH = "/internal/telephony/answer-audio"
 _HEADERS = {"X-Telephony-Secret": "test-secret", "Content-Type": "audio/wav"}
@@ -47,6 +50,24 @@ def test_spoken_reference_preserves_groups_without_guessing_kind(text, number, k
     else:
         assert reference is not None
         assert (reference.number, reference.kind) == (number, kind)
+
+
+def test_embedded_number_and_conversational_handoffs():
+    reference = embedded_reference("Не работает шкаф 25_125_2")
+    assert reference is not None and (reference.number, reference.kind) == ("25_125_2", "cabinet")
+    assert embedded_reference("Где документы по шкафу 025 01?").number == "025_01"
+    assert embedded_reference("Шкаф 25_125 или шкаф 25_126?") is None
+    for text in ("Можно оператора?", "А можно с человеком?", "Соедините меня с человеком"):
+        assert voice_intent(text) == "operator"
+    assert voice_intent("Не нужен оператор, я хочу задать вопрос") == "question"
+    assert requires_specialist("Как подключить шкаф?")
+    assert not requires_specialist("Где найти инструкцию, как подключить шкаф?")
+    assert not requires_specialist("Как подключить шкаф к приложению?")
+    spoken_number = embedded_reference("Шкаф двадцать пять сто двадцать пять два не работает")
+    assert spoken_number is not None and spoken_number.number == "25_125_2"
+    assert voice_intent("Спасибо, до свидания") == "ended"
+    assert voice_intent("Спасибо, вопрос решён") == "done"
+    assert not is_relevant_answer("Что делать с ошибкой Е36?", "Откройте настройки профиля.")
 
 
 @pytest.mark.parametrize(
@@ -418,3 +439,76 @@ async def test_voice_bot_prepares_only_meaningful_questions_before_looking_up_an
         assert answer.json()["exchange"] == {"question": "Где инструкция", "answer": _ANSWER}
         assert base64.b64decode(answer.json()["audio"]) == _wav(_PCM)
     assert outbound[-2:] == ["helper.savt.by", "tts.api.cloud.yandex.net"]
+
+
+async def test_confirmed_number_in_question_reaches_knowledge_search(monkeypatch):
+    original = "Не работает шкаф 25_125_2"
+    spoken = iter((original, "Да"))
+    real_client = httpx.AsyncClient
+    match = {
+        "kind": "cabinet", "cabinet_id": 2, "cabinet_number": "25_125_2",
+        "project_id": 1, "project_number": "25_125", "bitrix_deal_id": "555",
+    }
+    lookup = {"status": "found", "match": match}
+    session = SimpleNamespace(
+        begin=MagicMock(),
+        scalar=AsyncMock(return_value={**lookup, "number": "25_125_2"}),
+    )
+    # The resolver verifies persistence in its own tests.
+    resolver = AsyncMock(return_value=SimpleNamespace(status=lookup["status"]))
+    searches = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "stt.api.cloud.yandex.net":
+            return httpx.Response(200, json={"result": next(spoken)})
+        if request.url.host == "helper.savt.by":
+            searches.append(json.loads(request.content)["question"])
+            return httpx.Response(200, json={"status": "answered", "answer": _ANSWER})
+        assert request.url.host == "tts.api.cloud.yandex.net"
+        return httpx.Response(200, content=_PCM)
+
+    monkeypatch.setattr("app.api.call_objects._resolve_for_call", resolver)
+    monkeypatch.setattr(
+        "app.api.call_objects.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(provider), **kwargs),
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_session, lambda: session)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_settings,
+        lambda: Settings(savtassist_api_secret="test-secret", speechkit_api_key="test-key"),
+    )
+    path = "/internal/telephony/voice-turn"
+    payload = {
+        "audio": base64.b64encode(_wav(_PCM)).decode(), "prepare_question": True,
+        "linkedid": "test-call",
+    }
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as api:
+        turn = await api.post(path, headers=_HEADERS, json={**payload, "stage": "reference"})
+        assert turn.status_code == 200, turn.text
+        result = turn.json()
+        assert result["status"] == "confirm_reference"
+        assert result["reference"] == {"number": "25_125_2", "kind": "cabinet"}
+        assert result["question"] == original
+        confirm = await api.post(path, headers=_HEADERS, json={
+            **payload, "stage": "confirm_reference", "reference": result["reference"],
+            "pending_question": result["question"],
+        })
+        assert confirm.json() == {
+            "status": "question_ready", "question": original, "thinking": True,
+        }
+        resolver.assert_awaited_once()
+        assert resolver.await_args.args[1].number == "25_125_2"
+        answer = await api.post(
+            "/internal/telephony/voice-answer",
+            headers={"X-Telephony-Secret": "test-secret"},
+            json={"question": "Где схема этого шкафа?", "linkedid": "test-call"},
+        )
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["status"] == "answered"
+    assert len(searches) == 1
+    assert "Подтверждённый номер шкафа 25_125_2" in searches[0]
+    assert "Где схема этого шкафа?" in searches[0]
+    assert "555" not in searches[0]

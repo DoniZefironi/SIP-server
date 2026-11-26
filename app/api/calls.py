@@ -45,6 +45,7 @@ class CallOut(BaseModel):
     sector_by_default: bool
     direction: Direction
     outcome: str | None
+    bot_resolved: bool | None
     answered_by: str | None
     initiated_by: str | None
     employee_name: str | None

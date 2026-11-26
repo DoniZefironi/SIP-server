@@ -122,10 +122,8 @@ def listen(digits: str, answered: bool) -> tuple[str | None, bytes]:
     choice = _choice(_play(Path("beep"), digits), answered)
     if choice is not None:
         return choice, b""
-    _read_pcm()
-
     utterance = Utterance()
-    buffer = bytearray()
+    buffer = bytearray(_read_pcm())
     start_deadline = monotonic() + START_SILENCE_SECONDS
     while True:
         result = agi("WAIT FOR DIGIT 100")
@@ -139,6 +137,8 @@ def listen(digits: str, answered: bool) -> tuple[str | None, bytes]:
         for index in range(0, complete, FRAME_BYTES):
             utterance.add(bytes(buffer[index:index + FRAME_BYTES]), now)
         del buffer[:complete]
+        if utterance.too_long:
+            return "too_long", b""
 
         if result == ord("#"):
             break
@@ -148,8 +148,6 @@ def listen(digits: str, answered: bool) -> tuple[str | None, bytes]:
         elif now - utterance.last_speech >= END_SILENCE_SECONDS:
             break
 
-    if utterance.too_long:
-        return "too_long", b""
     return None, utterance.audio()
 
 
@@ -201,7 +199,7 @@ def fetch_turn(secret: str, audio: bytes, context: dict, wait_file: Path) -> dic
     if not isinstance(question, str) or not question.strip():
         raise RuntimeError("API не вернул распознанный вопрос")
     return _request_turn(secret, "/internal/telephony/voice-answer", {
-        "question": question, "history": context["history"],
+        "question": question, "history": context["history"], "linkedid": context["linkedid"],
     }, deadline, wait_file if turn.get("thinking") is True else None)
 
 
@@ -210,6 +208,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
     retries = 0
     stage = "reference"
     reference = None
+    pending_question = None
     reported = False
     prompt = phrases / f"bot_question{suffix}"
     with TemporaryDirectory(prefix="savt-voice-") as directory:
@@ -232,6 +231,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                     {
                         "history": history, "stage": stage,
                         "reference": reference, "linkedid": linkedid,
+                        "pending_question": pending_question,
                     },
                     phrases / "bot_wait",
                 )
@@ -255,17 +255,19 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                 case "no_answer":
                     history.clear()
                     retries = 0
-                    stage, reference = "question", None
+                    stage, reference, pending_question = "question", None, None
                     prompt = phrases / f"bot_no_answer{suffix}"
                     continue
                 case "operator":
                     return "operator"
                 case "done":
                     return "answered" if history else "ended"
+                case "ended":
+                    return "ended"
                 case "repeat":
                     if retries:
                         if stage != "question":
-                            stage, reference = "question", None
+                            stage, reference, pending_question = "question", None, None
                             retries = 0
                             prompt = phrases / "bot_ask_question"
                             continue
@@ -275,7 +277,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                     continue
             retries = 0
             if turn["status"] in REFERENCE_PROMPTS:
-                stage, reference = "question", None
+                stage, reference, pending_question = "question", None, None
                 prompt = phrases / REFERENCE_PROMPTS[turn["status"]]
                 continue
             answer = base64.b64decode(turn["audio"], validate=True)
@@ -286,6 +288,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                 reference = turn["reference"]
                 if not isinstance(reference, dict):
                     raise RuntimeError("API голосового бота вернул неверный номер")
+                pending_question = turn.get("question")
                 stage, prompt = "confirm_reference", answer_path
                 continue
             exchange = turn["exchange"]
@@ -296,7 +299,7 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                 return choice
             prompt = None if history else phrases / f"bot_feedback{suffix}"
             history = [*history[-1:], exchange]
-            stage, reference = "question", None
+            stage, reference, pending_question = "question", None, None
 
 
 def run() -> None:

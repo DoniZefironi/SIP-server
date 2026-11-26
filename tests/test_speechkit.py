@@ -85,6 +85,25 @@ def test_dialogue_orders_phrases_with_colliding_channel_indices() -> None:
     )
 
 
+def test_two_sides_of_operator_handoff_have_distinct_labels():
+    events = [
+        {"result": {
+            "channelTag": channel, "audioCursors": {"finalIndex": index}, "final": {
+                "alternatives": [{"startTimeMs": time, "text": text}],
+            },
+        }}
+        for channel, index, time, text in (
+            ("0", 0, "1000", "Помогите."), ("1", 0, "2000", "Здравствуйте."),
+            ("1", 1, "14500", "Слушаю вас."),
+        )
+    ]
+    result = _transcript("\n".join(map(json.dumps, events)), dialogue=True, bot_before_ms=14000)
+    assert result == (
+        "[00:01] Клиент: Помогите.\n[00:02] Ася / АТС: Здравствуйте.\n"
+        "[00:14] Сотрудник: Слушаю вас."
+    )
+
+
 def test_single_speaking_side_keeps_its_label_in_dialogue() -> None:
     response = json.dumps(
         {

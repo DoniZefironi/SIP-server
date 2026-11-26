@@ -115,7 +115,7 @@ def test_employee_answer_after_bot_keeps_original_recording() -> None:
     call = run(
         stage("start", Number="+375291234567"),
         stage("sector", Sector="2"),
-        user("SavtRecording", File=recording),
+        user("SavtRecording", File=recording, Source="bot"),
         stage("bot_answered"),
         {"Event": "QueueCallerJoin", "Linkedid": LINKED},
         {"Event": "AgentConnect", "Linkedid": LINKED, "Interface": "Local/2"},
@@ -125,6 +125,20 @@ def test_employee_answer_after_bot_keeps_original_recording() -> None:
     assert call.outcome == Outcome.ANSWERED
     assert call.answered_by == "Local/2"
     assert call.recording == recording
+    assert call.bot_started_at == T0 + timedelta(seconds=20)
+    assert call.bot_resolved is False
+
+
+def test_caller_can_confirm_bot_resolution_separately_from_participation() -> None:
+    call = run(
+        stage("start", Number="+375291234567"),
+        user("SavtRecording", File="/srv/recordings/calls/x", Source="bot"),
+        stage("bot_answered"),
+        stage("bot_resolved"),
+        hangup(),
+    )
+    assert call.outcome == Outcome.BOT_ANSWERED
+    assert call.bot_resolved is True
 
 
 def test_bot_answer_keeps_voicemail_as_the_final_outcome() -> None:

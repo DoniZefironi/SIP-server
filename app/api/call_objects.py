@@ -38,9 +38,11 @@ from app.services.voice_bot import (
     VoiceAnswerRequest,
     VoiceError,
     VoiceExchange,
+    VoiceReference,
     VoiceTurn,
     VoiceTurnRequest,
     confirms_reference,
+    embedded_reference,
     has_spoken_question,
     needs_thinking_prompt,
     question_pcm,
@@ -50,7 +52,7 @@ from app.services.voice_bot import (
     spoken_reference,
     voice_intent,
 )
-from app.services.voice_safety import answer_requires_operator, safety_route
+from app.services.voice_safety import answer_requires_operator, requires_specialist, safety_route
 
 router = APIRouter(prefix="/internal/telephony", tags=["internal: telephony"])
 log = logging.getLogger(__name__)
@@ -194,16 +196,25 @@ async def _reference_turn(
                 lookup = await client.resolve_object(dialogue.reference)
         except (SavtAssistError, HTTPException, SQLAlchemyError) as error:
             log.warning("voice reference lookup failed type=%s", type(error).__name__)
-            return VoiceTurn(status="reference_unavailable"), b""
-        status = "reference_found" if lookup.status == "found" else "reference_unavailable"
+            lookup = None
+        if dialogue.pending_question and dialogue.prepare_question:
+            return _ready_question(dialogue.pending_question), b""
+        status = (
+            "reference_found" if lookup and lookup.status == "found" else "reference_unavailable"
+        )
         return VoiceTurn(status=status), b""
 
     if skips_reference(text):
         return VoiceTurn(status="ask_question"), b""
     reference = spoken_reference(text)
+    pending = None
+    if reference is None and dialogue.prepare_question:
+        reference = embedded_reference(text)
+        if reference is not None:
+            pending = QuestionRequest(question=text).question
     if reference is not None:
         return (
-            VoiceTurn(status="confirm_reference", reference=reference),
+            VoiceTurn(status="confirm_reference", reference=reference, question=pending),
             await speech.synthesize(reference_confirmation(reference)),
         )
     return None
@@ -224,11 +235,12 @@ async def _voice_deadline() -> AsyncIterator[None]:
 
 async def _spoken_answer(
     question: str, history: list[VoiceExchange], client: SavtAssist, speech: SpeechKitVoice,
+    reference: VoiceReference | None = None,
 ) -> tuple[VoiceTurn, bytes]:
     started = perf_counter()
     answer = phone_channel_answer(question)
     if answer is None:
-        query = question_with_history(question, history)
+        query = question_with_history(question, history, reference)
         result = await client.answer_question(QuestionRequest(question=query))
         answer = result.answer
     looked_up = perf_counter()
@@ -251,6 +263,26 @@ async def _spoken_answer(
     return VoiceTurn(
         status="answered", exchange=VoiceExchange(question=question[:500], answer=answer),
     ), audio
+
+
+def _ready_question(text: str) -> VoiceTurn:
+    question = QuestionRequest(question=text).question
+    return VoiceTurn(
+        status="question_ready", question=question, thinking=needs_thinking_prompt(question),
+    )
+
+
+async def _confirmed_reference(session: AsyncSession, linkedid: str) -> VoiceReference | None:
+    async with session.begin():
+        raw = await session.scalar(select(Call.object_lookup).where(
+            Call.linkedid == linkedid, Call.ended_at.is_(None),
+        ))
+    if raw is None:
+        return None
+    lookup = CallObjectLookup.model_validate(raw)
+    if lookup.status == "found" and lookup.match is not None:
+        return VoiceReference(number=lookup.number, kind=lookup.match.kind)
+    return None
 
 
 async def _process_audio(
@@ -279,11 +311,10 @@ async def _process_audio(
         history = dialogue.history if dialogue else []
         if not has_spoken_question(question, history):
             return VoiceTurn(status="repeat"), b""
+        if requires_specialist(question):
+            return VoiceTurn(status="operator"), b""
         if dialogue is not None and dialogue.prepare_question:
-            return VoiceTurn(
-                status="question_ready", question=QuestionRequest(question=question).question,
-                thinking=needs_thinking_prompt(question),
-            ), b""
+            return _ready_question(question), b""
         return await _spoken_answer(question, history, client, speech)
 
 
@@ -342,13 +373,22 @@ async def voice_answer(
     client: Annotated[SavtAssist, Depends(_savtassist)],
     settings: Annotated[Settings, Depends(get_settings)],
     http: CloudHTTP,
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> VoiceTurn:
     """Получить озвученный ответ для уже распознанного вопроса."""
     async with _voice_deadline():
         safety = safety_route(data.question)
         if safety is not None:
             return VoiceTurn(status=safety)
+        if requires_specialist(data.question):
+            return VoiceTurn(status="operator")
+        reference = None
+        if data.linkedid:
+            try:
+                reference = await _confirmed_reference(session, data.linkedid)
+            except (SQLAlchemyError, ValidationError, OSError) as error:
+                log.warning("voice context unavailable type=%s", type(error).__name__)
         turn, audio = await _spoken_answer(
-            data.question, data.history, client, _speechkit(settings, http),
+            data.question, data.history, client, _speechkit(settings, http), reference,
         )
         return _with_audio(turn, audio)

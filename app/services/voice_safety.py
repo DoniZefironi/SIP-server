@@ -52,6 +52,16 @@ _REPAIR_ADVICE = re.compile(
     r"|(?:отсоедините|переподключите|поменяйте) (?:провод[а-я]*|кабел[а-я]*)"
     r"|(?:отключите|обойдите) защиту)\b"
 )
+_CABINET_CONNECTION = re.compile(
+    r"(?=[^.!?]*\b(?:шкаф\w*|щит\w*)\b)[^.!?]*\b(?:как|куда|к чему)\b"
+    r"[^.!?]*\b(?:подключ\w*|подсоедин\w*)\b", re.IGNORECASE,
+)
+_DOCUMENT_QUESTION = re.compile(
+    r"\b(?:где|найти|открыть|скачать|посмотреть|приложени\w*)\b"
+    r"[^.!?]*\b(?:схем\w*|инструкци\w*|документ\w*|приложени\w*)\b"
+    r"|\b(?:в|к)\s+приложени\w*\b|\bSavt\s+Assist\b",
+    re.IGNORECASE,
+)
 
 
 def safety_route(text: str) -> SafetyRoute | None:
@@ -76,3 +86,7 @@ def safety_route(text: str) -> SafetyRoute | None:
 
 def answer_requires_operator(text: str) -> bool:
     return safety_route(text) is not None or bool(_REPAIR_ADVICE.search(text.casefold()))
+
+
+def requires_specialist(text: str) -> bool:
+    return bool(_CABINET_CONNECTION.search(text) and not _DOCUMENT_QUESTION.search(text))

@@ -15,7 +15,10 @@ class SpeechKitError(Exception):
         self.retryable = retryable
 
 
-def _transcript(text: str, *, dialogue: bool = False, staff_label: str = "Сотрудник") -> str:
+def _transcript(
+    text: str, *, dialogue: bool = False, staff_label: str = "Сотрудник",
+    bot_before_ms: int | None = None,
+) -> str:
     """Собрать финальные фразы из потока JSON, выбирая нормализованный вариант."""
     if not text.strip():
         raise SpeechKitError("SpeechKit вернул пустой ответ при получении текста", retryable=True)
@@ -58,6 +61,11 @@ def _transcript(text: str, *, dialogue: bool = False, staff_label: str = "Сот
         if not phrase:
             continue
         speaker = speakers.get(key[0], "Собеседник")
+        if key[0] == "1" and bot_before_ms is not None:
+            if time_ms is None:
+                speaker = "Собеседник"
+            elif time_ms < bot_before_ms:
+                speaker = "Ася / АТС"
         prefix = ""
         if time_ms is not None:
             minutes, seconds = divmod(time_ms // 1000, 60)
@@ -132,7 +140,8 @@ class SpeechKit:
         return operation_id
 
     async def poll(
-        self, operation_id: str, *, dialogue: bool = False, staff_label: str = "Сотрудник"
+        self, operation_id: str, *, dialogue: bool = False, staff_label: str = "Сотрудник",
+        bot_before_ms: int | None = None,
     ) -> str | None:
         response = await self._request("GET", f"{_OPERATIONS}/{quote(operation_id, safe='')}")
         try:
@@ -150,4 +159,6 @@ class SpeechKit:
         response = await self._request(
             "GET", f"{_STT}/getRecognition", params={"operation_id": operation_id}
         )
-        return _transcript(response.text, dialogue=dialogue, staff_label=staff_label)
+        return _transcript(
+            response.text, dialogue=dialogue, staff_label=staff_label, bot_before_ms=bot_before_ms,
+        )

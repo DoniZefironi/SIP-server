@@ -119,6 +119,8 @@ class Call(Base):
     object_lookup: Mapped[dict[str, Any] | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql")
     )
+    bot_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bot_resolved: Mapped[bool | None] = mapped_column(Boolean)
 
     sector: Mapped[int | None] = mapped_column(SmallInteger, index=True)
     # True — клиент не выбрал сектор и попал в сектор по умолчанию после неудачных попыток.

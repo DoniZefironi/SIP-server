@@ -50,18 +50,21 @@ _PROMPTS = {
 }
 _OPERATOR = re.compile(
     r"(?:"
-    r"(?:(?:мне )?(?:нужен|нужна) |позовите |дайте )?"
+    r"(?:(?:мне )?(?:нужен|нужна) |позовите |дайте |можно(?: мне)? )?"
     r"(?:оператор[а]?|сотрудник[а]?|специалист[а]?)"
     r"|(?:соедините|свяжите|переключите)(?: меня)? "
-    r"(?:с(?:о)? (?:оператором|специалистом|сотрудником)|на (?:оператора|специалиста|сотрудника))"
-    r"|(?:я )?хочу (?:поговорить|связаться) с(?:о)? (?:оператором|специалистом|сотрудником)"
+    r"(?:с(?:о)? (?:оператором|специалистом|сотрудником|человеком)"
+    r"|на (?:оператора|специалиста|сотрудника|человека))"
+    r"|(?:(?:я )?хочу |можно (?:мне )?)?(?:поговорить |связаться )?"
+    r"с(?:о)? (?:оператором|специалистом|сотрудником|человеком)"
     r"|(?:(?:я )?хочу )?оставить (?:голосовое )?сообщение"
     r")"
 )
 _DONE = {
     "вопрос решен", "спасибо вопрос решен", "ответ помог", "все ясно", "все понятно",
-    "спасибо все понятно", "спасибо все ясно", "вопросов больше нет", "до свидания",
+    "спасибо все понятно", "спасибо все ясно",
 }
+_GOODBYE = {"вопросов больше нет", "до свидания", "спасибо до свидания"}
 _GREETING = {"алло", "здравствуйте", "здравствуй", "здрасте", "здрасьте", "привет"}
 _FILLER = re.compile(r"(?:та+к)+|эм+|м+|э+|ну|угу")
 _SHORT_FOLLOWUPS = {"когда", "где", "почему", "зачем", "куда", "откуда", "сколько", "как"}
@@ -83,6 +86,7 @@ _CONFIRMED = {"да", "верно", "да верно", "да правильно"
 _REFERENCE_PREFIX = re.compile(
     r"^(?:у меня )?(?:номер\s+)?(шкаф[а]?|объект[а]?|проект[а]?)\b[\s:№,]*"
 )
+_OBJECT_TOPIC = re.compile(r"\b(?:шкаф|объект|проект|схем|чертеж|оборудован)\w*\b")
 _SEPARATORS = {
     "_": "_", "подчеркивание": "_", "нижнее подчеркивание": "_",
     "-": "-", "дефис": "-", "тире": "-", "/": "/", "дробь": "/",
@@ -97,6 +101,14 @@ _NUMBER_WORDS = {
     "девяносто": 90, "сто": 100, "двести": 200, "триста": 300, "четыреста": 400,
     "пятьсот": 500, "шестьсот": 600, "семьсот": 700, "восемьсот": 800, "девятьсот": 900,
 }
+_NUMBER_TOKEN = r"(?:[0-9]+|" + "|".join(_NUMBER_WORDS) + r")(?![^\W_])"
+_SPOKEN_SEPARATORS = r"\b(?:" + "|".join(s for s in _SEPARATORS if len(s) > 1) + r")\b"
+_REFERENCE_SEPARATOR = r"(?:[_/-]|" + _SPOKEN_SEPARATORS + r")"
+_EMBEDDED_REFERENCE = re.compile(
+    r"\b(шкаф(?:а|у|ом|е)?|объект(?:а|у|ом|е)?|проект(?:а|у|ом|е)?)\b"
+    rf"[\s:]*(?:(?:номер\b|№)[\s:]*)?"
+    rf"({_NUMBER_TOKEN}(?:(?:\s*{_REFERENCE_SEPARATOR}\s*|\s+){_NUMBER_TOKEN})*)"
+)
 
 
 class VoiceReference(ObjectLookupRequest):
@@ -117,6 +129,7 @@ class VoiceTurnRequest(BaseModel):
     history: list[VoiceExchange] = Field(default_factory=list, max_length=2)
     stage: Literal["reference", "confirm_reference", "question"] = "question"
     reference: VoiceReference | None = None
+    pending_question: str | None = Field(default=None, min_length=1, max_length=2000)
     linkedid: str | None = Field(default=None, min_length=1, max_length=64)
     prepare_question: bool = False
 
@@ -124,16 +137,20 @@ class VoiceTurnRequest(BaseModel):
     def require_reference_for_confirmation(self) -> "VoiceTurnRequest":
         if (self.stage == "confirm_reference") != (self.reference is not None):
             raise ValueError("Номер требуется при подтверждении")
+        if self.pending_question is not None and self.stage != "confirm_reference":
+            raise ValueError("Ожидающий вопрос допустим при подтверждении номера")
         return self
 
 
 class VoiceAnswerRequest(QuestionRequest):
     history: list[VoiceExchange] = Field(default_factory=list, max_length=2)
+    linkedid: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class VoiceTurn(BaseModel):
     status: Literal[
-        "answered", "operator", "done", "repeat", "emergency", "urgent_operator", "no_answer",
+        "answered", "operator", "done", "ended", "repeat", "emergency", "urgent_operator",
+        "no_answer",
         "confirm_reference", "reference_found", "reference_unavailable", "ask_question",
         "question_ready",
     ]
@@ -149,17 +166,20 @@ def _normalized_words(text: str) -> str:
     return words.removeprefix("пожалуйста ").removesuffix(" пожалуйста")
 
 
-def voice_intent(text: str) -> Literal["question", "operator", "done", "repeat"]:
+def voice_intent(text: str) -> Literal["question", "operator", "done", "ended", "repeat"]:
     words = _normalized_words(text)
     if words in {"добрый день", "добрый вечер", "доброе утро"} or all(
         word in _GREETING or _FILLER.fullmatch(word) for word in words.split()
     ):
         return "repeat"
-    command = words.removeprefix("алло ").removeprefix("да ").removeprefix("нет ")
+    command = words.removeprefix("а ").removeprefix("алло ")
+    command = command.removeprefix("да ").removeprefix("нет ")
     if _OPERATOR.fullmatch(command):
         return "operator"
     if command in _DONE:
         return "done"
+    if command in _GOODBYE:
+        return "ended"
     return "question"
 
 
@@ -219,8 +239,7 @@ def spoken_reference(text: str) -> VoiceReference | None:
     else:
         text = text.removeprefix("номер ").removeprefix("№").lstrip()
 
-    separators = r"([_/-]|\b(?:нижнее подчеркивание|подчеркивание|дефис|тире|дробь)\b)"
-    parts = re.split(separators, text)
+    parts = re.split(f"({_REFERENCE_SEPARATOR})", text)
     number_parts = []
     for segment in parts[::2]:
         groups = _number_groups(segment)
@@ -243,19 +262,34 @@ def reference_confirmation(reference: VoiceReference) -> str:
     return f"Я услышала номер {spoken}. Верно? Скажите да или нет."
 
 
-def question_with_history(question: str, history: list[VoiceExchange]) -> str:
+def embedded_reference(text: str) -> VoiceReference | None:
+    matches = list(_EMBEDDED_REFERENCE.finditer(text.casefold().replace("ё", "е")))
+    if len(matches) != 1:
+        return None
+    kind = "шкаф" if matches[0][1].startswith("шкаф") else "объект"
+    number = matches[0][2]
+    return spoken_reference(f"{kind} {number}")
+
+
+def question_with_history(
+    question: str, history: list[VoiceExchange], reference: VoiceReference | None = None,
+) -> str:
     words = _normalized_words(question)
-    if not history or (words not in _SHORT_FOLLOWUPS and not _FOLLOWUP.search(words)):
-        return question
-    current = f"Текущий вопрос: {question}"
-    if len(current) >= 2000:
-        return question
-    previous = "\n".join(
+    follows_up = words in _SHORT_FOLLOWUPS or bool(_FOLLOWUP.search(words))
+    context = [
         f"Клиент: {exchange.question[:240]}\nБот: {exchange.answer[:320]}"
-        for exchange in history
-    )
-    context = f"\n\nКонтекст для уточнений к текущему вопросу:\n{previous}"
-    return current + context[:2000 - len(current)]
+        for exchange in history if follows_up
+    ]
+    if reference is not None and (follows_up or _OBJECT_TOPIC.search(words)):
+        mentioned = embedded_reference(question)
+        if mentioned is None or mentioned.number == reference.number:
+            kind = "шкафа" if reference.kind == "cabinet" else "объекта"
+            context.insert(0, f"Подтверждённый номер {kind} {reference.number}.")
+    current = f"Текущий вопрос: {question}"
+    if not context or len(current) >= 2000:
+        return question
+    details = "\n\nКонтекст для уточнений к текущему вопросу:\n" + "\n".join(context)
+    return current + details[:2000 - len(current)]
 
 
 class VoiceError(Exception):
