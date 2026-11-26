@@ -23,6 +23,7 @@ async def test_private_routes_reject_anonymous_requests():
     ) as api:
         for path in (
             "/api/calls", "/api/calls/counts", "/api/calls/1", "/api/calls/1/audio/mix",
+            "/api/calls/1/contacts",
             "/api/statistics/calls?date_from=2026-11-25T00:00Z&date_to=2026-11-26T00:00Z",
             "/api/statistics/callers?date_from=2026-11-25T00:00Z&date_to=2026-11-26T00:00Z",
             "/api/departments", "/api/departments/25", "/api/settings/telephony",

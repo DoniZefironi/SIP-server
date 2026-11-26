@@ -11,6 +11,7 @@ from app.config import Settings
 from app.db.models import BitrixDelivery, Call, RecordingJob
 from app.db.session import SessionLocal
 from app.services.bitrix import Bitrix, BitrixError, positive_id
+from app.services.phones import crm_phone_variants
 from app.services.summarization import SummaryStatus
 from app.services.yandexgpt import CallSummary
 
@@ -21,23 +22,6 @@ _REQUEST_TIMEOUT = 40
 _SEND_WINDOW = timedelta(seconds=90)
 _VERIFY_DELAY = timedelta(seconds=5)
 _INACTIVE_BBCODE = str.maketrans({"[": "［", "]": "］"})
-
-
-def _numbers(call: Call) -> list[str]:
-    if not call.caller:
-        return []
-    digits = call.caller.removeprefix("+")
-    numbers = dict.fromkeys((call.caller, digits, call.caller_raw or call.caller))
-    if len(digits) == 12 and digits.startswith("375"):
-        area, first, middle, last = digits[3:5], digits[5:8], digits[8:10], digits[10:]
-        local = digits[3:]
-        for variant in (
-            f"80{local}",
-            f"+375 ({area}) {first}-{middle}-{last}",
-            f"+375({area}){first}{middle}{last}",
-        ):
-            numbers[variant] = None
-    return list(numbers)
 
 
 async def destinations(
@@ -54,7 +38,7 @@ async def destinations(
     cards: set[tuple[str, int]] = set()
     owner_links: dict[int, list[str]] = defaultdict(list)
     matched_links: list[str] = []
-    numbers = _numbers(call)
+    numbers = crm_phone_variants(call.caller, call.caller_raw)
     if numbers:
         for kind in ("contact", "company"):
             ids = await client.find_by_phone(kind, numbers)

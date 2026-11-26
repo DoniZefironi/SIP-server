@@ -23,3 +23,19 @@ def normalize_phone(raw: str | None, region: str = DEFAULT_REGION) -> str | None
     if not phonenumbers.is_valid_number(parsed):
         return None
     return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+
+
+def crm_phone_variants(number: str | None, raw: str | None) -> list[str]:
+    """Форматы, в которых полный номер может быть сохранён в карточке CRM."""
+    if not number:
+        return []
+    digits = number.removeprefix("+")
+    variants = [number, digits, raw or number]
+    if len(digits) == 12 and digits.startswith("375"):
+        area, first, middle, last = digits[3:5], digits[5:8], digits[8:10], digits[10:]
+        variants.extend((
+            f"80{digits[3:]}",
+            f"+375 ({area}) {first}-{middle}-{last}",
+            f"+375({area}){first}{middle}{last}",
+        ))
+    return list(dict.fromkeys(variants))

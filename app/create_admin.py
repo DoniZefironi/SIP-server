@@ -8,7 +8,7 @@ from getpass import getpass
 from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import insert
 
-from app.api.auth import CreateUser
+from app.api.auth import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, CreateUser
 from app.db.models import AuthUser
 from app.db.session import SessionLocal, engine
 from app.services.auth import Role, hash_password, lock_account_management
@@ -44,7 +44,9 @@ def main() -> None:
     try:
         data = CreateUser(username=args.username, password=password, role=Role.ADMIN)
     except ValidationError:
-        raise SystemExit("Логин — 3–64 символа, пароль — 15–128 символов.") from None
+        raise SystemExit(
+            f"Логин — 3–64 символа, пароль — {PASSWORD_MIN_LENGTH}–{PASSWORD_MAX_LENGTH} символов."
+        ) from None
     print(f"Создан администратор {data.username} (ID {asyncio.run(create(data))}).")
 
 

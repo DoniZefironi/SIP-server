@@ -1,8 +1,9 @@
+import asyncio
 import re
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.config import get_settings
 from app.db.models import BitrixDelivery, Call, RecordingJob
 from app.db.session import get_session
+from app.services.bitrix import Bitrix, BitrixError
 from app.services.call_history import (
     TAB_CONDITIONS,
     VOICEMAIL_LEFT,
@@ -21,7 +23,7 @@ from app.services.call_history import (
     history_conditions,
 )
 from app.services.journal import Direction, Outcome
-from app.services.phones import normalize_phone
+from app.services.phones import crm_phone_variants, normalize_phone
 from app.services.recordings import AudioKind, ready_recording
 from app.services.savtassist import CallObjectLookup
 from app.services.yandexgpt import CallSummary
@@ -85,6 +87,16 @@ class CallCounts(BaseModel):
     missed: int
     missed_with_voicemail: int
     missed_without_voicemail: int
+
+
+class ClientContact(BaseModel):
+    id: int
+    name: str
+    url: str
+
+
+class ClientContacts(BaseModel):
+    items: list[ClientContact]
 
 
 class NotFoundOut(BaseModel):
@@ -204,6 +216,39 @@ async def get_call(
         bitrix_routing_status=job.bitrix_routing_status if job is not None else None,
         bitrix_deliveries=[DeliveryOut.model_validate(delivery) for delivery in deliveries],
     )
+
+
+@router.get("/calls/{call_id}/contacts")
+async def get_call_contacts(
+    call_id: Annotated[int, Path(gt=0, lt=2**63)],
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ClientContacts:
+    """Карточки контактов Bitrix24 по номеру клиента из звонка."""
+    async with session.begin():
+        call = await session.get(Call, call_id)
+        if call is None:
+            raise HTTPException(404, "Звонок не найден")
+        raw_number = normalize_phone(call.caller_raw)
+        number = call.caller or raw_number
+        numbers = crm_phone_variants(number, call.caller_raw if raw_number == number else None)
+    if not numbers:
+        return ClientContacts(items=[])
+
+    bitrix: Bitrix | None = getattr(request.app.state, "bitrix", None)
+    if bitrix is None:
+        raise HTTPException(503, "Не настроен поиск контактов Bitrix24")
+    try:
+        async with asyncio.timeout(8):
+            ids = await bitrix.find_by_phone("contact", numbers)
+            cards = await bitrix.caller_cards("contact", ids)
+    except (BitrixError, TimeoutError):
+        raise HTTPException(502, "Не удалось найти контакты в Bitrix24") from None
+
+    return ClientContacts(items=[
+        ClientContact(id=card.id, name=card.label, url=bitrix.card_url("contact", card.id))
+        for card in cards
+    ])
 
 
 @router.get(

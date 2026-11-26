@@ -56,14 +56,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ami_task = asyncio.create_task(client.run(), name="ami")
 
     app.state.department_directory = None
-    directory_http = None
+    app.state.bitrix = None
+    bitrix_http = None
     webhook = settings.bitrix_webhook_url.get_secret_value().strip()
-    if settings.bitrix_directory_enabled and webhook:
-        directory_http = httpx.AsyncClient(timeout=10)
+    if webhook:
+        bitrix_http = httpx.AsyncClient(timeout=10)
         try:
-            app.state.department_directory = DepartmentDirectory(Bitrix(directory_http, webhook))
+            app.state.bitrix = Bitrix(bitrix_http, webhook)
+            if settings.bitrix_directory_enabled:
+                app.state.department_directory = DepartmentDirectory(app.state.bitrix)
         except ValueError:
-            logging.getLogger(__name__).warning("Некорректный вебхук справочника Bitrix24")
+            logging.getLogger(__name__).warning("Некорректный вебхук Bitrix24")
 
     maintenance_task: asyncio.Task[None] | None = None
     if settings.maintenance_enabled:
@@ -103,8 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-        if directory_http is not None:
-            await directory_http.aclose()
+        if bitrix_http is not None:
+            await bitrix_http.aclose()
         await app.state.voice_http.aclose()
         del app.state.voice_http
         await engine.dispose()

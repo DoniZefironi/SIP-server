@@ -31,8 +31,12 @@ Username = Annotated[
     str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{2,63}$"),
     BeforeValidator(_normalize_username),
 ]
-LoginPassword = Annotated[SecretStr, Field(min_length=1, max_length=128)]
-NewPassword = Annotated[SecretStr, Field(min_length=15, max_length=128)]
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+LoginPassword = Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)]
+NewPassword = Annotated[
+    SecretStr, Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH),
+]
 
 
 class Login(BaseModel):
