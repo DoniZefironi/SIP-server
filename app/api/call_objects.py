@@ -27,7 +27,7 @@ from app.services.savtassist import (
     SavtAssist,
     SavtAssistError,
 )
-from app.services.voice_answers import is_relevant_answer
+from app.services.voice_answers import is_relevant_answer, phone_channel_answer
 from app.services.voice_bot import (
     MAX_QUESTION_BYTES,
     MAX_VOICE_TURN_BYTES,
@@ -133,6 +133,9 @@ async def answer_question(
     """Получить короткий ответ на общий вопрос для озвучки."""
     if safety_route(request.question):
         return QuestionAnswer(status="needs_operator")
+    local_answer = phone_channel_answer(request.question)
+    if local_answer is not None:
+        return QuestionAnswer(status="answered", answer=local_answer)
     try:
         result = await client.answer_question(request)
     except SavtAssistError as error:
@@ -218,37 +221,35 @@ async def _process_audio(
             if safety is not None:
                 log.info("voice turn %s stt_ms=%d", safety, (recognized - started) * 1000)
                 return VoiceTurn(status=safety), b""
-            if dialogue is not None:
-                intent = voice_intent(question)
-                if intent != "question":
-                    return VoiceTurn(status=intent), b""
-                if dialogue.stage != "question" and session is not None:
-                    reference_turn = await _reference_turn(
-                        question, dialogue, client, speech, session
-                    )
-                    if reference_turn is not None:
-                        return reference_turn
-            elif not question:
-                return VoiceTurn(status="repeat"), b""
+            intent = voice_intent(question)
+            if intent != "question":
+                return VoiceTurn(status=intent), b""
+            if dialogue is not None and dialogue.stage != "question" and session is not None:
+                reference_turn = await _reference_turn(question, dialogue, client, speech, session)
+                if reference_turn is not None:
+                    return reference_turn
 
-            query = question_with_history(question, dialogue.history if dialogue else [])
-            result = await client.answer_question(QuestionRequest(question=query))
+            answer = phone_channel_answer(question)
+            if answer is None:
+                query = question_with_history(question, dialogue.history if dialogue else [])
+                result = await client.answer_question(QuestionRequest(question=query))
+                answer = result.answer
             looked_up = perf_counter()
-            if result.answer is None:
+            if answer is None:
                 log.info(
                     "voice turn no_answer stt_ms=%d knowledge_ms=%d",
                     (recognized - started) * 1000,
                     (looked_up - recognized) * 1000,
                 )
                 return VoiceTurn(status="no_answer"), b""
-            if answer_requires_operator(result.answer):
+            if answer_requires_operator(answer):
                 log.info("voice turn urgent_operator reason=knowledge_answer")
                 return VoiceTurn(status="urgent_operator"), b""
-            if not is_relevant_answer(question, result.answer):
+            if not is_relevant_answer(question, answer):
                 log.info("voice turn no_answer reason=knowledge_mismatch")
                 return VoiceTurn(status="no_answer"), b""
 
-            audio = await speech.synthesize(result.answer)
+            audio = await speech.synthesize(answer)
             log.info(
                 "voice turn answered stt_ms=%d knowledge_ms=%d tts_ms=%d",
                 (recognized - started) * 1000,
@@ -257,7 +258,7 @@ async def _process_audio(
             )
             return VoiceTurn(
                 status="answered",
-                exchange=VoiceExchange(question=question[:500], answer=result.answer),
+                exchange=VoiceExchange(question=question[:500], answer=answer),
             ), audio
     except (VoiceError, SavtAssistError) as error:
         raise HTTPException(502, str(error)) from None

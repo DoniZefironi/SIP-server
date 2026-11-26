@@ -86,6 +86,7 @@ def test_profile_answer_must_match_the_requested_field_and_action():
         "Как поменять имя?", "Проверьте настройки профиля, чтобы исправить имя."
     )
     assert not is_relevant_answer("Где открыть инструкцию?", "В базе нет точного ответа.")
+    assert not is_relevant_answer("Где открыть инструкцию?", "Не знаю, что ответить.")
 
 
 @pytest.mark.parametrize(
@@ -181,6 +182,7 @@ async def test_voice_dialogue_carries_context_and_handles_spoken_choices(monkeyp
         "Алло.",
         "Спасибо, вопрос решён.",
         "Где инструкция?",
+        "Когда ближайшее обновление?",
     ))
     provider_questions = []
 
@@ -226,8 +228,11 @@ async def test_voice_dialogue_carries_context_and_handles_spoken_choices(monkeyp
 
         separate = (await api.post(path, headers=_HEADERS, json={"audio": audio})).json()
         assert separate["status"] == "answered"
+        independent = (await api.post(path, headers=_HEADERS, json=payload)).json()
+        assert independent["exchange"]["question"] == "Когда ближайшее обновление?"
     assert provider_questions[0] == provider_questions[2] == _QUESTION
-    assert len(provider_questions) == 3
+    assert provider_questions[3] == "Когда ближайшее обновление?"
+    assert len(provider_questions) == 4
     assert provider_questions[1].startswith("Текущий вопрос: А где именно её открыть?")
     assert _QUESTION in provider_questions[1] and _ANSWER in provider_questions[1]
 
@@ -301,3 +306,56 @@ async def test_voice_bot_uses_no_answer_prompt_for_unanswered_avatar_question(mo
     assert response.status_code == 200
     assert response.json() == {"status": "no_answer"}
     assert visited == ["stt.api.cloud.yandex.net", "helper.savt.by"]
+
+
+async def test_voice_turn_handles_fillers_and_chat_in_phone_context(monkeypatch):
+    real_client = httpx.AsyncClient
+    recognized = iter((
+        "Так, так, так.", "Тактактак", "Как сообщить о неполадке?", "Что такое чат?",
+        "В каком чате?", "Где открыть чат в Savt Assist?",
+    ))
+    searched = []
+    spoken = []
+    chat_instructions = "Чтобы описать неполадку в чате, укажите номер шкафа и симптомы."
+    requested_instructions = "Чтобы открыть чат, нажмите на иконку переписки."
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "stt.api.cloud.yandex.net":
+            return httpx.Response(200, json={"result": next(recognized)})
+        if request.url.host == "helper.savt.by":
+            question = json.loads(request.content)["question"]
+            searched.append(question)
+            answer = requested_instructions if "открыть чат" in question else chat_instructions
+            return httpx.Response(200, json={"status": "answered", "answer": answer})
+        assert request.url.host == "tts.api.cloud.yandex.net"
+        spoken.extend(parse_qs(request.content.decode())["text"])
+        return httpx.Response(200, content=_PCM)
+
+    monkeypatch.setattr(
+        "app.api.call_objects.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(provider), **kwargs),
+    )
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_settings,
+        lambda: Settings(savtassist_api_secret="test-secret", speechkit_api_key="test-key"),
+    )
+    payload = {
+        "audio": base64.b64encode(_wav(_PCM)).decode(),
+        "history": [{"question": "Нужна помощь", "answer": chat_instructions}],
+    }
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        path = "/internal/telephony/voice-turn"
+        results = [
+            (await api.post(path, headers=_HEADERS, json=payload)).json()
+            for _ in range(6)
+        ]
+    assert [turn["status"] for turn in results] == [
+        "repeat", "repeat", "no_answer", "answered", "answered", "answered",
+    ]
+    assert searched == ["Как сообщить о неполадке?", "Где открыть чат в Savt Assist?"]
+    assert spoken[0] == spoken[1]
+    assert "разговариваем по телефону" in spoken[0]
+    assert spoken[2:] == [requested_instructions]

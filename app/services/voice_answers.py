@@ -22,15 +22,31 @@ _NO_ANSWER = re.compile(
     r"\b(?:нет (?:точного |подходящего )?(?:ответа|информации|сведений|инструкции)"
     r"|не (?:нашла|нашел|нашли|удалось найти) (?:точн\w+ |подходящ\w+ )?"
     r"(?:ответ\w*|информац\w*|сведени\w*|инструкци\w*)"
-    r"|я не знаю|у меня нет данных|информаци\w* (?:нет|недостаточно))\b"
+    r"|я не знаю|не знаю,? (?:что ответить|как ответить|чем помочь)"
+    r"|не могу (?:точно )?ответить|у меня нет данных|информаци\w* (?:нет|недостаточно))\b"
+)
+_CHAT = re.compile(r"\b(?:чат(?:а|у|е|ом|ы|ов|ам|ах|ами)?|мессенджер\w*|переписк\w*)\b")
+_CHAT_CLARIFICATION = re.compile(
+    r"(?:а )?(?:что (?:такое|значит) чат|что это за чат|что за чат|какой чат"
+    r"|(?:в|о) каком чате(?: (?:речь|вы говорите))?|в какой чат(?: мне)? писать)"
 )
 
 
+def phone_channel_answer(question: str) -> str | None:
+    words = " ".join(re.findall(r"[^\W_]+", question.casefold()))
+    if _CHAT_CLARIFICATION.fullmatch(words):
+        return (
+            "Чат — это переписка. Сейчас мы разговариваем по телефону. "
+            "Если у вас неполадка, расскажите о ней голосом."
+        )
+    return None
+
+
 def is_relevant_answer(question: str, answer: str) -> bool:
-    """Отсечь отказы и подмену поля настроек соседним."""
+    """Отсечь отказы, непрошеный переход в чат и подмену поля настроек."""
     ask = question.casefold().replace("ё", "е")
     reply = answer.casefold().replace("ё", "е")
-    if _NO_ANSWER.search(reply):
+    if _NO_ANSWER.search(reply) or (_CHAT.search(reply) and not _CHAT.search(ask)):
         return False
     if not _CHANGE.search(ask):
         return True

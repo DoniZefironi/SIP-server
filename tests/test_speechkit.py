@@ -80,6 +80,9 @@ def test_dialogue_orders_phrases_with_colliding_channel_indices() -> None:
     assert _transcript(response, dialogue=True) == (
         "[00:01] Клиент: Когда?\n[00:03] Сотрудник: Проверю сроки."
     )
+    assert _transcript(response, dialogue=True, staff_label="Ася") == (
+        "[00:01] Клиент: Когда?\n[00:03] Ася: Проверю сроки."
+    )
 
 
 def test_single_speaking_side_keeps_its_label_in_dialogue() -> None:

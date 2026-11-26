@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db.models import Call, RecordingJob
 from app.db.session import SessionLocal
+from app.services.journal import Outcome
 from app.services.recordings import ready_recording, stereo_wav
 from app.services.speechkit import SpeechKit, SpeechKitError
 
@@ -97,12 +98,16 @@ async def _submit(call_id: int, content: str, client: SpeechKit) -> None:
         job.last_error = None
 
 
-async def _poll(job: RecordingJob, client: SpeechKit) -> None:
+async def _poll(job: RecordingJob, call: Call, client: SpeechKit) -> None:
     try:
         if not job.operation_id:
             raise SpeechKitError("Отсутствует идентификатор операции SpeechKit")
         async with asyncio.timeout(_REQUEST_TIMEOUT):
-            transcript = await client.poll(job.operation_id, dialogue=job.dialogue_channels)
+            transcript = await client.poll(
+                job.operation_id,
+                dialogue=job.dialogue_channels,
+                staff_label="Ася" if call.outcome == Outcome.BOT_ANSWERED else "Сотрудник",
+            )
     except TimeoutError:
         _fail_or_retry(job, SpeechKitError("Истекло время ожидания SpeechKit", retryable=True))
         return
@@ -135,15 +140,15 @@ async def transcribe_next(settings: Settings, client: SpeechKit) -> bool:
         )
         if job is None:
             return False
-        if job.transcription_status == Status.PROCESSING:
-            await _poll(job, client)
-            return True
         if job.transcription_status == Status.SUBMITTING:
             _fail_or_retry(job, SpeechKitError("Отправка прервалась до сохранения ID операции"))
             return True
 
         call = await session.get(Call, job.call_id)
         if call is None:
+            return True
+        if job.transcription_status == Status.PROCESSING:
+            await _poll(job, call, client)
             return True
         try:
             content, dialogue_channels = await asyncio.to_thread(

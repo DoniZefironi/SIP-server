@@ -5,6 +5,8 @@ from io import BytesIO
 from pathlib import Path
 
 from app.db.models import Call
+from app.services.journal import Outcome
+from app.services.recording_queue import _ready_jobs
 from app.services.recordings import ready_recording
 from app.services.transcription import _wav_content
 
@@ -63,3 +65,30 @@ def test_transcription_uses_aligned_channels_and_falls_back_to_mix(tmp_path: Pat
     with wave.open(BytesIO(b64decode(content)), "rb") as stereo:
         assert (stereo.getnchannels(), stereo.getframerate()) == (2, 8000)
         assert stereo.readframes(2) == b"\x01\x02\x05\x06\x03\x04\x00\x00"
+
+
+def test_bot_recording_queues_transcription_only(tmp_path: Path) -> None:
+    path = tmp_path / "conversation.wav"
+    write_wav(path, b"\x00\x01" * 16)
+    stem = str(path.with_suffix(""))
+    ended_at = datetime.now(UTC)
+    calls = [
+        Call(id=1, outcome=Outcome.BOT_ANSWERED, recording=stem, ended_at=ended_at),
+        Call(id=2, outcome=Outcome.ANSWERED, recording=stem, ended_at=ended_at),
+        Call(id=3, outcome=Outcome.BOT_ANSWERED, recording=stem),
+    ]
+
+    assert _ready_jobs(calls, tmp_path) == [
+        {
+            "call_id": 1,
+            "audio_kind": "mix",
+            "summary_status": "skipped",
+            "bitrix_routing_status": "skipped",
+        },
+        {
+            "call_id": 2,
+            "audio_kind": "mix",
+            "summary_status": "pending",
+            "bitrix_routing_status": "pending",
+        },
+    ]

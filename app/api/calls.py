@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Annotated
 
@@ -20,6 +21,7 @@ from app.services.call_history import (
     history_conditions,
 )
 from app.services.journal import Direction, Outcome
+from app.services.phones import normalize_phone
 from app.services.recordings import AudioKind, ready_recording
 from app.services.savtassist import CallObjectLookup
 from app.services.yandexgpt import CallSummary
@@ -44,6 +46,7 @@ class CallOut(BaseModel):
     answered_by: str | None
     initiated_by: str | None
     employee_name: str | None
+    employee_number: str | None
     wait_seconds: int | None
     talk_seconds: int | None
     has_recording: bool
@@ -89,18 +92,22 @@ class NotFoundOut(BaseModel):
 
 
 _WAV_CONTENT = {"audio/wav": {"schema": {"type": "string", "format": "binary"}}}
+_EMPLOYEE_NUMBER = re.compile(r"(?:PJSIP/)?(\+?[0-9]{1,15})(?:@[A-Za-z0-9_.-]+)?", re.I)
 
 
 def _to_out(call: Call, voicemail_left: bool) -> CallOut:
     settings = get_settings()
     sector = call.sector
     employee = call.initiated_by or call.answered_by
+    match = _EMPLOYEE_NUMBER.fullmatch(employee) if employee else None
+    number = match[1] if match else None
     return CallOut.model_validate(
         {
             **{f: getattr(call, f) for f in CallOut.model_fields if hasattr(call, f)},
             "sector_name": settings.sector_names.get(sector) if sector is not None else None,
             "sector_number": settings.sector_numbers.get(sector) if sector is not None else None,
             "employee_name": settings.employee_names.get(employee) if employee else None,
+            "employee_number": (normalize_phone(number) or number) if number else None,
             "has_recording": ready_recording(call, "mix", settings.recordings_dir) is not None,
             "has_message": ready_recording(call, "message", settings.recordings_dir) is not None,
             "voicemail_left": voicemail_left,

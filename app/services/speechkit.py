@@ -7,7 +7,6 @@ import httpx
 _STT = "https://stt.api.cloud.yandex.net/stt/v3"
 _OPERATIONS = "https://operation.api.cloud.yandex.net/operations"
 _WHITESPACE = re.compile(r"\s*")
-_SPEAKERS = {"0": "Клиент", "1": "Сотрудник"}
 
 
 class SpeechKitError(Exception):
@@ -16,7 +15,7 @@ class SpeechKitError(Exception):
         self.retryable = retryable
 
 
-def _transcript(text: str, *, dialogue: bool = False) -> str:
+def _transcript(text: str, *, dialogue: bool = False, staff_label: str = "Сотрудник") -> str:
     """Собрать финальные фразы из потока JSON, выбирая нормализованный вариант."""
     if not text.strip():
         raise SpeechKitError("SpeechKit вернул пустой ответ при получении текста", retryable=True)
@@ -52,12 +51,13 @@ def _transcript(text: str, *, dialogue: bool = False) -> str:
         time_ms, _ = phrases[key]
         return time_ms is None, time_ms or 0, key[1], key[0]
 
+    speakers = {"0": "Клиент", "1": staff_label}
     lines = []
     for key in sorted(phrases, key=chronological):
         time_ms, phrase = phrases[key]
         if not phrase:
             continue
-        speaker = _SPEAKERS.get(key[0], "Собеседник")
+        speaker = speakers.get(key[0], "Собеседник")
         prefix = ""
         if time_ms is not None:
             minutes, seconds = divmod(time_ms // 1000, 60)
@@ -131,7 +131,9 @@ class SpeechKit:
             raise SpeechKitError("SpeechKit не вернул идентификатор отправленной операции") from exc
         return operation_id
 
-    async def poll(self, operation_id: str, *, dialogue: bool = False) -> str | None:
+    async def poll(
+        self, operation_id: str, *, dialogue: bool = False, staff_label: str = "Сотрудник"
+    ) -> str | None:
         response = await self._request("GET", f"{_OPERATIONS}/{quote(operation_id, safe='')}")
         try:
             operation = response.json()
@@ -148,4 +150,4 @@ class SpeechKit:
         response = await self._request(
             "GET", f"{_STT}/getRecognition", params={"operation_id": operation_id}
         )
-        return _transcript(response.text, dialogue=dialogue)
+        return _transcript(response.text, dialogue=dialogue, staff_label=staff_label)

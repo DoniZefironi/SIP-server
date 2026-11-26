@@ -43,7 +43,9 @@ _PROMPTS = {
     "bot_retry": "Я слушаю. Продолжайте после сигнала.",
     "bot_retry_long": "Сформулируйте вопрос короче, пожалуйста.",
     "bot_wait": "Тактактак",
-    "bot_no_answer": "Точного ответа на этот вопрос у меня нет.",
+    "bot_no_answer": (
+        "Точного ответа у меня нет. Можете задать другой вопрос или нажать ноль."
+    ),
     "bot_emergency": "Срочно звоните один, один, два. Отойдите в безопасное место.",
     "bot_urgent_operator": (
         "При дыме, огне или угрозе людям сразу звоните один, один, два."
@@ -64,6 +66,11 @@ _DONE = {
     "спасибо все понятно", "спасибо все ясно", "вопросов больше нет", "до свидания",
 }
 _GREETING = {"алло", "алло алло", "здравствуйте", "добрый день", "добрый вечер", "привет"}
+_FILLER = re.compile(r"(?:та+к)+|эм+|м+|э+|ну|угу")
+_FOLLOWUP = re.compile(
+    r"\b(?:ее|его|их|там|туда|это|этот|эту|эта|эти|этого|этой|этом)\b"
+    r"|^(?:а )?(?:что дальше|как дальше|где именно|куда именно|как именно)$"
+)
 _NO_REFERENCE = {
     "нет номера", "номера нет", "номер не знаю", "не знаю номера", "не знаю номер",
     "не знаю", "я не знаю номера", "я не знаю номер", "у меня нет номера", "без номера",
@@ -133,7 +140,7 @@ def _normalized_words(text: str) -> str:
 
 def voice_intent(text: str) -> Literal["question", "operator", "done", "repeat"]:
     words = _normalized_words(text)
-    if not words or words in _GREETING:
+    if not words or words in _GREETING or all(_FILLER.fullmatch(word) for word in words.split()):
         return "repeat"
     command = words.removeprefix("алло ").removeprefix("да ").removeprefix("нет ")
     if _OPERATOR.fullmatch(command):
@@ -212,7 +219,7 @@ def reference_confirmation(reference: VoiceReference) -> str:
 
 
 def question_with_history(question: str, history: list[VoiceExchange]) -> str:
-    if not history:
+    if not history or not _FOLLOWUP.search(_normalized_words(question)):
         return question
     current = f"Текущий вопрос: {question}"
     if len(current) >= 2000:

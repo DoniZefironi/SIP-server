@@ -17,14 +17,21 @@ log = logging.getLogger(__name__)
 
 _SCAN_INTERVAL = 15.0
 _BATCH_SIZE = 100
+_CONVERSATION_OUTCOMES = (Outcome.ANSWERED, Outcome.BOT_ANSWERED)
 
 
 def _ready_jobs(calls: Sequence[Call], root: Path) -> list[dict[str, int | str]]:
     jobs = []
     for call in calls:
-        kind: AudioKind = "mix" if call.outcome == Outcome.ANSWERED else "message"
+        kind: AudioKind = "mix" if call.outcome in _CONVERSATION_OUTCOMES else "message"
         if ready_recording(call, kind, root) is not None:
-            jobs.append({"call_id": call.id, "audio_kind": kind})
+            followup_status = "skipped" if call.outcome == Outcome.BOT_ANSWERED else "pending"
+            jobs.append({
+                "call_id": call.id,
+                "audio_kind": kind,
+                "summary_status": followup_status,
+                "bitrix_routing_status": followup_status,
+            })
     return jobs
 
 
@@ -40,7 +47,7 @@ async def enqueue_ready_recordings(settings: Settings) -> int:
                 Call.id > after_id,
                 Call.ended_at >= oldest,
                 or_(
-                    and_(Call.outcome == Outcome.ANSWERED, Call.recording.is_not(None)),
+                    and_(Call.outcome.in_(_CONVERSATION_OUTCOMES), Call.recording.is_not(None)),
                     and_(
                         Call.outcome.in_(OUTCOME_BY_MESSAGE_REASON.values()),
                         Call.message_file.is_not(None),

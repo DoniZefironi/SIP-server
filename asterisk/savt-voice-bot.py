@@ -231,8 +231,11 @@ def dialogue(secret: str, phrases: Path, suffix: str, linkedid: str | None) -> s
                     _play(phrases / "bot_urgent_operator", "")
                     return "operator"
                 case "no_answer":
-                    _play(phrases / "bot_no_answer", "")
-                    return "operator"
+                    history.clear()
+                    retries = 0
+                    stage, reference = "question", None
+                    prompt = phrases / "bot_no_answer"
+                    continue
                 case "operator":
                     return "operator"
                 case "done":
