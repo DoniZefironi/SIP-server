@@ -1,7 +1,10 @@
 import os
 
+import pytest
+
 # Тесты не должны трогать настоящую станцию и базу: AMI выключен, порт базы заведомо пустой.
 os.environ["TELEPHONY_AMI_ENABLED"] = "false"
+os.environ["TELEPHONY_AUTH_SECURE_COOKIES"] = "true"
 os.environ["TELEPHONY_DB_HOST"] = "127.0.0.1"
 os.environ["TELEPHONY_DB_PORT"] = "1"
 os.environ["TELEPHONY_MAINTENANCE_ENABLED"] = "false"
@@ -10,3 +13,14 @@ os.environ["TELEPHONY_SPEECHKIT_ENABLED"] = "false"
 os.environ["TELEPHONY_YANDEXGPT_ENABLED"] = "false"
 os.environ["TELEPHONY_BITRIX_ENABLED"] = "false"
 os.environ["TELEPHONY_BITRIX_DIRECTORY_ENABLED"] = "false"
+
+
+@pytest.fixture
+def admin_session(monkeypatch):
+    from app.api.auth import principal
+    from app.db.models import AuthUser
+    from app.main import app
+
+    monkeypatch.setitem(
+        app.dependency_overrides, principal, lambda: AuthUser(id=1, role="admin", is_active=True),
+    )

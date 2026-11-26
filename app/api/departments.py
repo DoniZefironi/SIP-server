@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ami.client import AmiError
+from app.api.auth import manager
 from app.db.session import get_session
 from app.services.bitrix import BitrixError
 from app.services.department_directory import (
@@ -132,7 +133,7 @@ async def departments(request: Request, session: Session) -> Departments:
     )
 
 
-@router.get("/{department_id}")
+@router.get("/{department_id}", dependencies=[Depends(manager)])
 async def department(
     department_id: DepartmentId, request: Request, session: Session
 ) -> DepartmentDetail:
@@ -164,7 +165,7 @@ async def _save(
         raise HTTPException(503, "Asterisk не подтвердил сохранение настроек") from None
 
 
-@router.put("/{department_id}/settings")
+@router.put("/{department_id}/settings", dependencies=[Depends(manager)])
 async def save_settings(
     department_id: DepartmentId, settings: DepartmentSettings, request: Request
 ) -> DepartmentSettings:
@@ -176,6 +177,6 @@ async def save_settings(
     return settings
 
 
-@router.delete("/{department_id}/settings", status_code=204)
+@router.delete("/{department_id}/settings", status_code=204, dependencies=[Depends(manager)])
 async def delete_settings(department_id: DepartmentId, request: Request) -> None:
     await _save(request, department_id, None)

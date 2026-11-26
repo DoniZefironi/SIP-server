@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     JSON,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    Uuid,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,6 +24,51 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+class AuthUser(Base):
+    __tablename__ = "auth_users"
+    __table_args__ = (
+        CheckConstraint("role IN ('viewer', 'manager', 'admin')", name="ck_auth_users_role"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(8))
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="CASCADE"), index=True,
+    )
+    access_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuthRefreshToken(Base):
+    __tablename__ = "auth_refresh_tokens"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("auth_sessions.id", ondelete="CASCADE"), index=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthLoginLimit(Base):
+    __tablename__ = "auth_login_limits"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class CallEvent(Base):

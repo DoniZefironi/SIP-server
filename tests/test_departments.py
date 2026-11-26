@@ -36,7 +36,7 @@ class Station:
         return {"Response": "Success"}
 
 
-async def test_department_routes_and_membership(monkeypatch) -> None:
+async def test_department_routes_and_membership(monkeypatch, admin_session) -> None:
     requests = []
 
     def bitrix_response(request: httpx.Request) -> httpx.Response:

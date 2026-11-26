@@ -6,6 +6,7 @@ import wave
 from datetime import UTC, datetime, timedelta
 from math import sin, tau
 from pathlib import Path
+from secrets import token_urlsafe
 from struct import pack
 from tempfile import NamedTemporaryFile
 
@@ -14,7 +15,8 @@ from alembic.config import Config
 from sqlalchemy.dialects.postgresql import insert
 
 from alembic import command
-from app.db.models import BitrixDelivery, Call, RecordingJob
+from app.db.models import AuthUser, BitrixDelivery, Call, RecordingJob
+from app.services.auth import Role, hash_password, revoke_sessions
 from app.services.journal import Direction, Outcome
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +43,7 @@ def _write_wav(path: Path, segments: list[tuple[int, int, int]]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-async def _seed(recordings: Path) -> None:
+async def _seed(recordings: Path, demo_password: str) -> None:
     from app.db.session import SessionLocal, engine
 
     now = datetime.now(UTC)
@@ -93,7 +95,18 @@ async def _seed(recordings: Path) -> None:
         dict(call_id=5, audio_kind="mix", transcription_status="failed"),
     )
     try:
+        password_hash = await hash_password(demo_password)
         async with SessionLocal.begin() as session:
+            demo_user_id = await session.scalar(
+                insert(AuthUser)
+                .values(username="demo-admin", password_hash=password_hash, role=Role.ADMIN)
+                .on_conflict_do_update(
+                    index_elements=[AuthUser.username],
+                    set_={"password_hash": password_hash, "role": Role.ADMIN, "is_active": True},
+                )
+                .returning(AuthUser.id)
+            )
+            await revoke_sessions(session, demo_user_id)
             for call_id, call in enumerate(calls, 1):
                 started = now - timedelta(minutes=(len(calls) - call_id) * 5, seconds=40)
                 values = dict(call)
@@ -141,6 +154,7 @@ def main() -> None:
         TELEPHONY_DB_NAME="telephony_demo",
         TELEPHONY_DB_USER="telephony_demo",
         TELEPHONY_DB_PASSWORD="telephony_demo_local",
+        TELEPHONY_AUTH_SECURE_COOKIES="false",
         TELEPHONY_RECORDINGS_DIR=str(recordings),
         TELEPHONY_AMI_ENABLED="false",
         TELEPHONY_RECORDING_QUEUE_ENABLED="false",
@@ -155,7 +169,9 @@ def main() -> None:
     config = Config(_ROOT / "alembic.ini")
     config.set_main_option("script_location", "%(here)s/alembic")
     command.upgrade(config, "head")
-    asyncio.run(_seed(recordings))
+    demo_password = token_urlsafe(24)
+    asyncio.run(_seed(recordings, demo_password))
+    print(f"Локальный стенд. Логин demo-admin, пароль {demo_password}")
     uvicorn.run("app.main:app", host="127.0.0.1", port=18081)
 
 

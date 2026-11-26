@@ -51,6 +51,7 @@ def station(monkeypatch) -> Station:
     return station
 
 
+@pytest.mark.usefixtures("admin_session")
 async def test_settings_api_reads_existing_values_and_saves_one_update(station: Station) -> None:
     url = "/api/settings/telephony"
     async with httpx.AsyncClient(
@@ -82,6 +83,7 @@ async def test_settings_api_reads_existing_values_and_saves_one_update(station: 
         assert (await api.get(url)).json() == updated
 
 
+@pytest.mark.usefixtures("admin_session")
 async def test_holiday_api_applies_to_existing_astdb_calendar(station: Station) -> None:
     url = "/api/settings/holidays"
     async with httpx.AsyncClient(

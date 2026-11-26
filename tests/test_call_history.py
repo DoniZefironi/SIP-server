@@ -22,7 +22,7 @@ from app.services.call_history import history_conditions
     ],
 )
 async def test_call_history_exposes_employee_number_in_list_and_detail(
-    monkeypatch, direction, answered_by, initiated_by, number
+    monkeypatch, admin_session, direction, answered_by, initiated_by, number
 ):
     now = datetime(2026, 11, 26, tzinfo=UTC)
     call = Call(

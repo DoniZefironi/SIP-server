@@ -12,6 +12,7 @@ dependencies = [
     "alembic>=1.14",
     "phonenumbers>=8.13",
     "httpx>=0.27",
+    "argon2-cffi>=25.1,<26",
 ]
 
 [dependency-groups]

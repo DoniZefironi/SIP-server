@@ -11,6 +11,7 @@ from sqlalchemy import delete
 from app.config import Settings
 from app.db.models import CallEvent
 from app.db.session import SessionLocal
+from app.services.auth import prune_auth
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ async def run_maintenance(settings: Settings) -> None:
             removed = await clean_events(settings.events_retention_days)
             if removed:
                 log.info("Удалено старых событий станции: %s", removed)
+            async with SessionLocal() as db:
+                await prune_auth(db)
         except Exception:
             log.exception("Ошибка обслуживания")
         await asyncio.sleep(settings.maintenance_interval)

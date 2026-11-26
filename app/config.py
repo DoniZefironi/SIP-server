@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TELEPHONY_", extra="ignore")
 
     log_level: str = "INFO"
+    auth_secure_cookies: bool = True
 
     db_host: str = "127.0.0.1"
     db_port: int = 5432
