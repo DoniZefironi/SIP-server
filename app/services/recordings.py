@@ -1,4 +1,5 @@
 import wave
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -7,6 +8,12 @@ from app.db.models import Call
 
 AudioKind = Literal["mix", "client", "staff", "message"]
 _SUFFIXES = {"mix": ".wav", "client": "-client.wav", "staff": "-staff.wav"}
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingInfo:
+    path: Path
+    duration_seconds: int
 
 
 def stereo_wav(client: Path, staff: Path, max_bytes: int) -> bytes | None:
@@ -41,8 +48,8 @@ def stereo_wav(client: Path, staff: Path, max_bytes: int) -> bytes | None:
     return output.getvalue()
 
 
-def ready_recording(call: Call, kind: AudioKind, root: Path) -> Path | None:
-    """Путь к завершённой, непустой WAV-записи звонка."""
+def recording_info(call: Call, kind: AudioKind, root: Path) -> RecordingInfo | None:
+    """Путь и длительность завершённой, непустой WAV-записи звонка."""
     if call.ended_at is None:
         return None
 
@@ -60,7 +67,8 @@ def ready_recording(call: Call, kind: AudioKind, root: Path) -> Path | None:
 
         with wave.open(str(path), "rb") as recording:
             frames = recording.getnframes()
-            if frames == 0:
+            rate = recording.getframerate()
+            if frames == 0 or rate <= 0:
                 return None
 
             # Один последний кадр позволяет заметить обрезанный файл без чтения всей записи.
@@ -72,4 +80,9 @@ def ready_recording(call: Call, kind: AudioKind, root: Path) -> Path | None:
         # Файл может появиться чуть позже события AMI или быть уже удалён по сроку хранения.
         return None
 
-    return path
+    return RecordingInfo(path, frames // rate)
+
+
+def ready_recording(call: Call, kind: AudioKind, root: Path) -> Path | None:
+    info = recording_info(call, kind, root)
+    return info.path if info is not None else None

@@ -1,15 +1,18 @@
 import re
-from datetime import UTC, datetime
+import wave
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from sqlalchemy import create_engine, select
 
+from app.config import Settings
 from app.db.models import Call
 from app.db.session import get_session
 from app.main import app
 from app.services.call_history import history_conditions
+from app.services.journal import Outcome
 
 
 @pytest.mark.parametrize(
@@ -49,6 +52,43 @@ async def test_call_history_exposes_employee_number_in_list_and_detail(
         assert item["employee_number"] == number
         assert item["answered_by"] == answered_by
         assert item["initiated_by"] == initiated_by
+
+
+@pytest.mark.parametrize(("has_wav", "ended", "seconds"), [
+    (True, True, 37), (False, True, 90), (True, False, None),
+])
+async def test_bot_call_duration_is_returned_in_list_and_detail(
+    monkeypatch, admin_session, tmp_path, has_wav, ended, seconds,
+):
+    stem = tmp_path / "bot"
+    if has_wav:
+        with wave.open(str(stem.with_suffix(".wav")), "wb") as audio:
+            audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+            audio.writeframes(bytes(2 * 8000 * 37))
+    started = datetime(2026, 11, 26, tzinfo=UTC)
+    call = Call(
+        id=102, direction="incoming", outcome=Outcome.BOT_ANSWERED, sector_by_default=False,
+        started_at=started, ended_at=started + timedelta(seconds=90) if ended else None,
+        recording=str(stem),
+    )
+
+    async def db_session():
+        yield AsyncMock(
+            get=AsyncMock(side_effect=[call, None]),
+            scalar=AsyncMock(return_value=1),
+            execute=AsyncMock(return_value=Mock(all=lambda: [(call, False)])),
+        )
+
+    settings = Settings(recordings_dir=tmp_path)
+    monkeypatch.setattr("app.api.calls.get_settings", lambda: settings)
+    monkeypatch.setitem(app.dependency_overrides, get_session, db_session)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as api:
+        listing = await api.get("/api/calls")
+        detail = await api.get("/api/calls/102")
+    assert listing.status_code == detail.status_code == 200
+    assert listing.json()["items"][0]["talk_seconds"] == detail.json()["talk_seconds"] == seconds
 
 
 def test_number_search_matches_partial_formatted_and_original_numbers():

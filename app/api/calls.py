@@ -24,7 +24,7 @@ from app.services.call_history import (
 )
 from app.services.journal import Direction, Outcome
 from app.services.phones import crm_phone_variants, normalize_phone
-from app.services.recordings import AudioKind, ready_recording
+from app.services.recordings import AudioKind, ready_recording, recording_info
 from app.services.savtassist import CallObjectLookup
 from app.services.yandexgpt import CallSummary
 
@@ -113,6 +113,13 @@ def _to_out(call: Call, voicemail_left: bool) -> CallOut:
     employee = call.initiated_by or call.answered_by
     match = _EMPLOYEE_NUMBER.fullmatch(employee) if employee else None
     number = match[1] if match else None
+    recording = recording_info(call, "mix", settings.recordings_dir)
+    talk_seconds = call.talk_seconds
+    if talk_seconds is None and call.outcome == Outcome.BOT_ANSWERED and call.ended_at is not None:
+        talk_seconds = (
+            recording.duration_seconds if recording is not None
+            else max(0, int((call.ended_at - call.started_at).total_seconds()))
+        )
     return CallOut.model_validate(
         {
             **{f: getattr(call, f) for f in CallOut.model_fields if hasattr(call, f)},
@@ -120,7 +127,8 @@ def _to_out(call: Call, voicemail_left: bool) -> CallOut:
             "sector_number": settings.sector_numbers.get(sector) if sector is not None else None,
             "employee_name": settings.employee_names.get(employee) if employee else None,
             "employee_number": (normalize_phone(number) or number) if number else None,
-            "has_recording": ready_recording(call, "mix", settings.recordings_dir) is not None,
+            "talk_seconds": talk_seconds,
+            "has_recording": recording is not None,
             "has_message": ready_recording(call, "message", settings.recordings_dir) is not None,
             "voicemail_left": voicemail_left,
         }
