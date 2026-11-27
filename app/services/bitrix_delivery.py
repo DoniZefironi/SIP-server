@@ -13,7 +13,7 @@ from app.db.session import SessionLocal
 from app.services.bitrix import Bitrix, BitrixError, positive_id
 from app.services.phones import crm_phone_variants
 from app.services.summarization import SummaryStatus
-from app.services.yandexgpt import CallSummary
+from app.services.summary_model import CallSummary
 
 log = logging.getLogger(__name__)
 _RETRY_DELAY = timedelta(seconds=20)

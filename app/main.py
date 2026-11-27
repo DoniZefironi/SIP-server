@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         transcription_task = asyncio.create_task(run_transcription(settings), name="transcription")
 
     summary_task: asyncio.Task[None] | None = None
-    if settings.yandexgpt_enabled:
+    if settings.summary_provider == "aiai" or settings.yandexgpt_enabled:
         summary_task = asyncio.create_task(run_summarization(settings), name="summarization")
 
     bitrix_task: asyncio.Task[None] | None = None

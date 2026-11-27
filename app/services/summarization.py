@@ -9,8 +9,9 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db.models import RecordingJob
 from app.db.session import SessionLocal
+from app.services.summary_model import ChatSummary, SummaryError
 from app.services.transcription import Status as TranscriptionStatus
-from app.services.yandexgpt import YandexGpt, YandexGptError
+from app.services.yandexgpt import YandexGpt
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class SummaryStatus(StrEnum):
     FAILED = "failed"
 
 
-def _fail_or_retry(job: RecordingJob, error: YandexGptError) -> None:
+def _fail_or_retry(job: RecordingJob, error: SummaryError) -> None:
     job.summary_error = str(error)
     if error.retryable and job.summary_retry_count < _MAX_RETRIES:
         job.summary_next_attempt_at = datetime.now(UTC) + _RETRY_DELAY * (
@@ -38,7 +39,7 @@ def _fail_or_retry(job: RecordingJob, error: YandexGptError) -> None:
     log.warning("Не удалось составить выжимку звонка %s: %s", job.call_id, error)
 
 
-async def summarize_next(client: YandexGpt) -> bool:
+async def summarize_next(client: ChatSummary) -> bool:
     async with SessionLocal.begin() as session:
         job = await session.scalar(
             select(RecordingJob)
@@ -63,9 +64,11 @@ async def summarize_next(client: YandexGpt) -> bool:
             async with asyncio.timeout(_REQUEST_TIMEOUT):
                 summary = await client.summarize(transcript)
         except TimeoutError:
-            _fail_or_retry(job, YandexGptError("Истекло время ожидания YandexGPT", retryable=True))
+            _fail_or_retry(job, SummaryError(
+                f"Истекло время ожидания {client.provider}", retryable=True,
+            ))
             return True
-        except YandexGptError as error:
+        except SummaryError as error:
             _fail_or_retry(job, error)
             return True
 
@@ -75,15 +78,46 @@ async def summarize_next(client: YandexGpt) -> bool:
         return True
 
 
-async def run_summarization(settings: Settings) -> None:
+def _summary_client(settings: Settings, http: httpx.AsyncClient) -> ChatSummary | None:
+    if settings.summary_provider == "aiai":
+        key = settings.aiai_api_key.get_secret_value().strip()
+        model = settings.aiai_model.strip()
+        if not (key and model):
+            log.error("Для AIAI.BY нужны TELEPHONY_AIAI_API_KEY и TELEPHONY_AIAI_MODEL")
+            return None
+        try:
+            base_url = httpx.URL(settings.aiai_base_url.strip())
+        except httpx.InvalidURL:
+            base_url = httpx.URL("")
+        if (
+            base_url.scheme != "https" or not base_url.host or base_url.userinfo
+            or base_url.query or base_url.fragment
+        ):
+            log.error("Для TELEPHONY_AIAI_BASE_URL нужен HTTPS-адрес API без параметров и логина")
+            return None
+        http.headers["Authorization"] = f"Bearer {key}"
+        return ChatSummary(
+            http,
+            endpoint=f"{str(base_url).rstrip('/')}/chat/completions",
+            model=model,
+            provider="AIAI.BY",
+        )
+
     key = settings.yandexgpt_api_key.get_secret_value().strip()
     folder_id = settings.yandexgpt_folder_id.strip()
     if not (key and folder_id):
         log.error("YandexGPT включён, но для него не заданы ключ API и каталог")
-        return
+        return None
+    http.headers["Authorization"] = f"Api-Key {key}"
+    return YandexGpt(http, folder_id)
 
-    async with httpx.AsyncClient(headers={"Authorization": f"Api-Key {key}"}, timeout=30) as http:
-        client = YandexGpt(http, folder_id)
+
+async def run_summarization(settings: Settings) -> None:
+    async with httpx.AsyncClient(timeout=30) as http:
+        client = _summary_client(settings, http)
+        if client is None:
+            return
+        log.info("Провайдер выжимок звонков: %s", client.provider)
         while True:
             worked = False
             try:

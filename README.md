@@ -29,10 +29,13 @@
   После включения сервис отправляет WAV до 60 МБ из очереди, включая накопленные задачи.
   Если SpeechKit мог принять файл, но идентификатор операции не сохранился, задача переходит
   в `failed`, чтобы избежать автоматической повторной загрузки.
-- Выжимка через YandexGPT на основе сохранённой расшифровки. `GET /api/calls/{id}` отдаёт
+- Выжимка через YandexGPT или AIAI.BY на основе сохранённой расшифровки. `GET /api/calls/{id}` отдаёт
   её статус, суть обращения, договорённости, следующие действия и однозначно распознанный код
-  сделки. Для запуска задать `TELEPHONY_YANDEXGPT_ENABLED=true`, `TELEPHONY_YANDEXGPT_FOLDER_ID`
-  и `TELEPHONY_YANDEXGPT_API_KEY` в `.env`. Обрабатываются и накопленные расшифровки.
+  сделки. Для AIAI.BY задать `TELEPHONY_SUMMARY_PROVIDER=aiai` и `TELEPHONY_AIAI_API_KEY`.
+  `TELEPHONY_AIAI_MODEL` по умолчанию равен `gemini-2.5-flash-lite`.
+  Для YandexGPT задать `TELEPHONY_SUMMARY_PROVIDER=yandex` (значение по умолчанию),
+  `TELEPHONY_YANDEXGPT_ENABLED=true`, `TELEPHONY_YANDEXGPT_FOLDER_ID` и `TELEPHONY_YANDEXGPT_API_KEY`.
+  Выбранному провайдеру передаются также расшифровки из очереди, для которых ещё нет выжимки.
   Для звонков со статусом `bot_answered` выжимка формируется в карточке звонка.
 - Доставка выжимок в Bitrix24 через входящий вебхук с правами `crm` и `im`.
   В личном сообщении сотруднику указывается имя со ссылкой на карточку звонящего

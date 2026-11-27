@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,9 +36,13 @@ class Settings(BaseSettings):
     recording_queue_enabled: bool = True
     speechkit_enabled: bool = False
     speechkit_api_key: SecretStr = SecretStr("")
+    summary_provider: Literal["yandex", "aiai"] = "yandex"
     yandexgpt_enabled: bool = False
     yandexgpt_folder_id: str = ""
     yandexgpt_api_key: SecretStr = SecretStr("")
+    aiai_api_key: SecretStr = SecretStr("")
+    aiai_base_url: str = "https://api.aiai.by/v1"
+    aiai_model: str = "gemini-2.5-flash-lite"
     bitrix_enabled: bool = False
     bitrix_directory_enabled: bool = False
     bitrix_contacts_enabled: bool = True

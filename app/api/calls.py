@@ -26,7 +26,7 @@ from app.services.journal import Direction, Outcome
 from app.services.phones import crm_phone_variants, normalize_phone
 from app.services.recordings import AudioKind, ready_recording, recording_info
 from app.services.savtassist import CallObjectLookup
-from app.services.yandexgpt import CallSummary
+from app.services.summary_model import CallSummary
 
 router = APIRouter(tags=["calls"])
 
