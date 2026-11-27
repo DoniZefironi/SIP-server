@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db.models import Call
 from app.db.session import get_session
+from app.services.aiai import AiaiError
 from app.services.savtassist import (
     CallObjectLookup,
     ObjectLookupRequest,
@@ -34,11 +35,11 @@ from app.services.voice_bot import (
     MAX_VOICE_TURN_BYTES,
     MAX_VOICE_WAV_BYTES,
     VOICE_RECORDING_SECONDS,
-    SpeechKitVoice,
     VoiceAnswerRequest,
     VoiceError,
     VoiceExchange,
     VoiceReference,
+    VoiceSpeech,
     VoiceTurn,
     VoiceTurnRequest,
     confirms_reference,
@@ -51,6 +52,7 @@ from app.services.voice_bot import (
     skips_reference,
     spoken_reference,
     voice_intent,
+    voice_speech,
 )
 from app.services.voice_safety import answer_requires_operator, requires_specialist, safety_route
 
@@ -175,15 +177,15 @@ def _voice_pcm(audio: bytes | bytearray, *, dialogue: bool = False) -> bytes:
         raise HTTPException(422, "Неверный формат записи вопроса") from None
 
 
-def _speechkit(settings: Settings, http: httpx.AsyncClient) -> SpeechKitVoice:
-    key = settings.speechkit_api_key.get_secret_value().strip()
-    if not key or not key.isascii():
-        raise HTTPException(503, "Ключ SpeechKit для голосового бота не настроен")
-    return SpeechKitVoice(http, key)
+def _speech(settings: Settings, http: httpx.AsyncClient) -> VoiceSpeech:
+    try:
+        return voice_speech(settings, http)
+    except (AiaiError, VoiceError) as error:
+        raise HTTPException(503, str(error)) from None
 
 
 async def _reference_turn(
-    text: str, dialogue: VoiceTurnRequest, client: SavtAssist, speech: SpeechKitVoice,
+    text: str, dialogue: VoiceTurnRequest, client: SavtAssist, speech: VoiceSpeech,
     session: AsyncSession,
 ) -> tuple[VoiceTurn, bytes] | None:
     if dialogue.reference is not None and confirms_reference(text):
@@ -225,7 +227,7 @@ async def _voice_deadline() -> AsyncIterator[None]:
     try:
         async with asyncio.timeout(15):
             yield
-    except (VoiceError, SavtAssistError) as error:
+    except (AiaiError, VoiceError, SavtAssistError) as error:
         raise HTTPException(502, str(error)) from None
     except ValidationError:
         raise HTTPException(502, "Некорректный результат распознавания") from None
@@ -234,7 +236,7 @@ async def _voice_deadline() -> AsyncIterator[None]:
 
 
 async def _spoken_answer(
-    question: str, history: list[VoiceExchange], client: SavtAssist, speech: SpeechKitVoice,
+    question: str, history: list[VoiceExchange], client: SavtAssist, speech: VoiceSpeech,
     reference: VoiceReference | None = None,
 ) -> tuple[VoiceTurn, bytes]:
     started = perf_counter()
@@ -288,7 +290,7 @@ async def _confirmed_reference(session: AsyncSession, linkedid: str) -> VoiceRef
 async def _process_audio(
     pcm: bytes,
     client: SavtAssist,
-    speech: SpeechKitVoice,
+    speech: VoiceSpeech,
     dialogue: VoiceTurnRequest | None = None,
     session: AsyncSession | None = None,
 ) -> tuple[VoiceTurn, bytes]:
@@ -339,7 +341,7 @@ async def answer_audio(
     http: CloudHTTP,
 ) -> Response:
     """Распознать вопрос из WAV и вернуть озвученный ответ."""
-    speech = _speechkit(settings, http)
+    speech = _speech(settings, http)
     pcm = _voice_pcm(await _read_body(request, MAX_QUESTION_BYTES))
     turn, audio = await _process_audio(pcm, client, speech)
     if turn.status != "answered":
@@ -356,7 +358,7 @@ async def voice_turn(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> VoiceTurn:
     """Обработать одну реплику. Короткий контекст хранится только в процессе AGI."""
-    speech = _speechkit(settings, http)
+    speech = _speech(settings, http)
     body = await _read_body(request, MAX_VOICE_TURN_BYTES)
     try:
         data = VoiceTurnRequest.model_validate_json(body)
@@ -389,6 +391,6 @@ async def voice_answer(
             except (SQLAlchemyError, ValidationError, OSError) as error:
                 log.warning("voice context unavailable type=%s", type(error).__name__)
         turn, audio = await _spoken_answer(
-            data.question, data.history, client, _speechkit(settings, http), reference,
+            data.question, data.history, client, _speech(settings, http), reference,
         )
         return _with_audio(turn, audio)

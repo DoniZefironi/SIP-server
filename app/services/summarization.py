@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db.models import RecordingJob
 from app.db.session import SessionLocal
+from app.services.aiai import AiaiError, aiai_connection
 from app.services.summary_model import ChatSummary, SummaryError
 from app.services.transcription import Status as TranscriptionStatus
 from app.services.yandexgpt import YandexGpt
@@ -80,25 +81,19 @@ async def summarize_next(client: ChatSummary) -> bool:
 
 def _summary_client(settings: Settings, http: httpx.AsyncClient) -> ChatSummary | None:
     if settings.summary_provider == "aiai":
-        key = settings.aiai_api_key.get_secret_value().strip()
         model = settings.aiai_model.strip()
-        if not (key and model):
-            log.error("Для AIAI.BY нужны TELEPHONY_AIAI_API_KEY и TELEPHONY_AIAI_MODEL")
+        if not model:
+            log.error("Для AIAI.BY нужен TELEPHONY_AIAI_MODEL")
             return None
         try:
-            base_url = httpx.URL(settings.aiai_base_url.strip())
-        except httpx.InvalidURL:
-            base_url = httpx.URL("")
-        if (
-            base_url.scheme != "https" or not base_url.host or base_url.userinfo
-            or base_url.query or base_url.fragment
-        ):
-            log.error("Для TELEPHONY_AIAI_BASE_URL нужен HTTPS-адрес API без параметров и логина")
+            base_url, headers = aiai_connection(settings)
+        except AiaiError as error:
+            log.error("%s", error)
             return None
-        http.headers["Authorization"] = f"Bearer {key}"
+        http.headers.update(headers)
         return ChatSummary(
             http,
-            endpoint=f"{str(base_url).rstrip('/')}/chat/completions",
+            endpoint=f"{base_url}/chat/completions",
             model=model,
             provider="AIAI.BY",
         )

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     maintenance_enabled: bool = True
     maintenance_interval: float = 3600.0
     recording_queue_enabled: bool = True
+    speech_provider: Literal["speechkit", "aiai"] = "speechkit"
     speechkit_enabled: bool = False
     speechkit_api_key: SecretStr = SecretStr("")
     summary_provider: Literal["yandex", "aiai"] = "yandex"
@@ -43,6 +44,10 @@ class Settings(BaseSettings):
     aiai_api_key: SecretStr = SecretStr("")
     aiai_base_url: str = "https://api.aiai.by/v1"
     aiai_model: str = "gemini-2.5-flash-lite"
+    aiai_voice_stt_model: str = "nova-3"
+    aiai_recording_stt_model: str = "whisper-1"
+    aiai_tts_model: str = "eleven-flash-v2.5"
+    aiai_tts_voice: str = "lily"
     bitrix_enabled: bool = False
     bitrix_directory_enabled: bool = False
     bitrix_contacts_enabled: bool = True

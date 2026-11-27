@@ -8,10 +8,13 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.db.models import Call, RecordingJob
 from app.db.session import SessionLocal
+from app.services.aiai import AiaiError, AiaiSpeech
+from app.services.aiai_recordings import recognize_tracks, recording_paths
 from app.services.journal import Outcome
 from app.services.recordings import ready_recording, stereo_wav
 from app.services.speechkit import SpeechKit, SpeechKitError
@@ -60,7 +63,7 @@ def _wav_content(call: Call, kind: str, root: Path) -> tuple[str, bool]:
     return b64encode(data).decode("ascii"), False
 
 
-def _fail_or_retry(job: RecordingJob, error: SpeechKitError) -> None:
+def _fail_or_retry(job: RecordingJob, error: SpeechKitError | AiaiError) -> None:
     job.last_error = str(error)
     if error.retryable and job.retry_count < _MAX_RETRIES:
         job.next_attempt_at = datetime.now(UTC) + _POLL_DELAY * (2**job.retry_count)
@@ -102,17 +105,12 @@ async def _poll(job: RecordingJob, call: Call, client: SpeechKit) -> None:
     try:
         if not job.operation_id:
             raise SpeechKitError("Отсутствует идентификатор операции SpeechKit")
-        bot_before_ms = None
-        if call.bot_started_at is not None and call.answered_at is not None:
-            milliseconds = int((call.answered_at - call.bot_started_at).total_seconds() * 1000)
-            if milliseconds > 0:
-                bot_before_ms = milliseconds
         async with asyncio.timeout(_REQUEST_TIMEOUT):
             transcript = await client.poll(
                 job.operation_id,
                 dialogue=job.dialogue_channels,
                 staff_label="Ася" if call.outcome == Outcome.BOT_ANSWERED else "Сотрудник",
-                bot_before_ms=bot_before_ms,
+                bot_before_ms=_bot_before_ms(call),
             )
     except TimeoutError:
         _fail_or_retry(job, SpeechKitError("Истекло время ожидания SpeechKit", retryable=True))
@@ -130,20 +128,31 @@ async def _poll(job: RecordingJob, call: Call, client: SpeechKit) -> None:
     job.transcription_status = Status.COMPLETED
 
 
+def _bot_before_ms(call: Call) -> int | None:
+    if call.bot_started_at is None or call.answered_at is None:
+        return None
+    milliseconds = int((call.answered_at - call.bot_started_at).total_seconds() * 1000)
+    return milliseconds if milliseconds > 0 else None
+
+
+async def _next_job(session: AsyncSession) -> RecordingJob | None:
+    return await session.scalar(
+        select(RecordingJob)
+        .where(
+            RecordingJob.transcription_status.in_(
+                (Status.PENDING, Status.SUBMITTING, Status.PROCESSING)
+            ),
+            RecordingJob.next_attempt_at <= datetime.now(UTC),
+        )
+        .order_by(RecordingJob.next_attempt_at, RecordingJob.call_id)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+
+
 async def transcribe_next(settings: Settings, client: SpeechKit) -> bool:
     async with SessionLocal.begin() as session:
-        job = await session.scalar(
-            select(RecordingJob)
-            .where(
-                RecordingJob.transcription_status.in_(
-                    (Status.PENDING, Status.SUBMITTING, Status.PROCESSING)
-                ),
-                RecordingJob.next_attempt_at <= datetime.now(UTC),
-            )
-            .order_by(RecordingJob.next_attempt_at, RecordingJob.call_id)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
+        job = await _next_job(session)
         if job is None:
             return False
         if job.transcription_status == Status.SUBMITTING:
@@ -175,18 +184,79 @@ async def transcribe_next(settings: Settings, client: SpeechKit) -> bool:
     return True
 
 
-async def run_transcription(settings: Settings) -> None:
-    key = settings.speechkit_api_key.get_secret_value().strip()
-    if not key:
-        log.error("SpeechKit включён, но TELEPHONY_SPEECHKIT_API_KEY пуст")
-        return
+async def _transcribe_aiai_next(settings: Settings, client: AiaiSpeech) -> bool:
+    async with SessionLocal.begin() as session:
+        job = await _next_job(session)
+        if job is None:
+            return False
+        if job.transcription_status == Status.SUBMITTING:
+            _fail_or_retry(job, AiaiError("Отправка прервалась до сохранения расшифровки"))
+            return True
+        call = await session.get(Call, job.call_id)
+        if call is None:
+            return True
+        try:
+            paths = await asyncio.to_thread(
+                recording_paths, call, job.audio_kind, settings.recordings_dir,
+            )
+        except AiaiError as error:
+            _fail_or_retry(job, error)
+            return True
+        call_id = job.call_id
+        staff_label = "Ася" if call.outcome == Outcome.BOT_ANSWERED else "Сотрудник"
+        bot_before_ms = _bot_before_ms(call)
+        job.transcription_status = Status.SUBMITTING
+        job.operation_id = None
+        job.next_attempt_at = datetime.now(UTC) + _SUBMISSION_WINDOW
+        job.dialogue_channels = len(paths) == 2
 
-    async with httpx.AsyncClient(headers={"Authorization": f"Api-Key {key}"}, timeout=30) as http:
-        client = SpeechKit(http)
+    error = None
+    transcript = ""
+    try:
+        async with asyncio.timeout(_REQUEST_TIMEOUT):
+            transcript = await recognize_tracks(
+                client, paths, staff_label=staff_label, bot_before_ms=bot_before_ms,
+            )
+    except TimeoutError:
+        error = AiaiError("Результат отправки в AIAI.BY неизвестен: истекло время ожидания")
+    except AiaiError as exc:
+        error = exc
+
+    async with SessionLocal.begin() as session:
+        job = await session.get(RecordingJob, call_id, with_for_update=True)
+        if job is not None and job.transcription_status == Status.SUBMITTING:
+            if error is None:
+                job.transcript = transcript
+                job.transcription_status = Status.COMPLETED
+                job.last_error = None
+                job.retry_count = 0
+            else:
+                _fail_or_retry(job, error)
+    return True
+
+
+async def run_transcription(settings: Settings) -> None:
+    async with httpx.AsyncClient(timeout=30) as http:
+        if settings.speech_provider == "aiai":
+            try:
+                client = AiaiSpeech(http, settings)
+            except AiaiError as error:
+                log.error("%s", error)
+                return
+            transcribe = _transcribe_aiai_next
+        else:
+            key = settings.speechkit_api_key.get_secret_value().strip()
+            if not key:
+                log.error("SpeechKit включён, но TELEPHONY_SPEECHKIT_API_KEY пуст")
+                return
+            http.headers["Authorization"] = f"Api-Key {key}"
+            client = SpeechKit(http)
+            transcribe = transcribe_next
+        log.info("Провайдер распознавания записей: %s", settings.speech_provider)
         while True:
             worked = False
             try:
-                worked = await transcribe_next(settings, client)
+                worked = await transcribe(settings, client)
             except Exception:
                 log.exception("Не удалось обработать задачу расшифровки")
             await asyncio.sleep(1 if worked else 3)

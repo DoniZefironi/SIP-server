@@ -4,12 +4,13 @@ import io
 import re
 import wave
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.services.aiai import AiaiError, AiaiSpeech, mono_wav
 from app.services.savtassist import ObjectKind, ObjectLookupRequest, QuestionRequest
 
 MAX_QUESTION_BYTES = 256_000
@@ -296,6 +297,12 @@ class VoiceError(Exception):
     pass
 
 
+class VoiceSpeech(Protocol):
+    async def recognize(self, pcm: bytes) -> str: ...
+
+    async def synthesize(self, text: str, *, speed: float = 1.0) -> bytes: ...
+
+
 def question_pcm(audio: bytes | bytearray, max_frames: int = _MAX_QUESTION_FRAMES) -> bytes:
     with wave.open(io.BytesIO(audio), "rb") as wav:
         if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, 8000):
@@ -344,19 +351,21 @@ class SpeechKitVoice:
         pcm = response.content
         if not 0 < len(pcm) <= _MAX_ANSWER_BYTES or len(pcm) % 2:
             raise VoiceError("SpeechKit вернул некорректный звук")
-        buffer = io.BytesIO()
-        with wave.open(buffer, "wb") as wav:
-            wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
-            wav.writeframes(pcm)
-        return buffer.getvalue()
+        return mono_wav(pcm)
+
+
+def voice_speech(settings: Settings, http: httpx.AsyncClient) -> VoiceSpeech:
+    if settings.speech_provider == "aiai":
+        return AiaiSpeech(http, settings)
+    key = settings.speechkit_api_key.get_secret_value().strip()
+    if not key or not key.isascii():
+        raise VoiceError("Ключ SpeechKit для голосового бота не настроен")
+    return SpeechKitVoice(http, key)
 
 
 async def _synthesize_prompts() -> dict[str, bytes]:
-    key = get_settings().speechkit_api_key.get_secret_value().strip()
-    if not key:
-        raise SystemExit("Укажи TELEPHONY_SPEECHKIT_API_KEY")
     async with httpx.AsyncClient(timeout=8) as http:
-        speech = SpeechKitVoice(http, key)
+        speech = voice_speech(get_settings(), http)
         return {
             name: await speech.synthesize(text, speed=1.55 if name == "bot_wait" else 1.0)
             for name, text in _PROMPTS.items()
@@ -372,5 +381,5 @@ if __name__ == "__main__":
         directory.mkdir(parents=True, exist_ok=True)
         for name, audio in prompts.items():
             (directory / f"{name}.wav").write_bytes(audio)
-    except VoiceError as error:
+    except (VoiceError, AiaiError) as error:
         raise SystemExit(str(error)) from None

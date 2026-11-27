@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         recording_task = asyncio.create_task(run_recording_queue(settings), name="recording-queue")
 
     transcription_task: asyncio.Task[None] | None = None
-    if settings.speechkit_enabled:
+    if settings.speech_provider == "aiai" or settings.speechkit_enabled:
         transcription_task = asyncio.create_task(run_transcription(settings), name="transcription")
 
     summary_task: asyncio.Task[None] | None = None
