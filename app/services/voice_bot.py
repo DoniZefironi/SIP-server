@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import Settings, get_settings
-from app.services.aiai import AiaiError, AiaiSpeech, mono_wav
+from app.services.aiai import AiaiAudioError, AiaiError, AiaiSpeech, mono_wav
 from app.services.savtassist import ObjectKind, ObjectLookupRequest, QuestionRequest
 
 MAX_QUESTION_BYTES = 256_000
@@ -366,10 +366,17 @@ def voice_speech(settings: Settings, http: httpx.AsyncClient) -> VoiceSpeech:
 async def _synthesize_prompts() -> dict[str, bytes]:
     async with httpx.AsyncClient(timeout=8) as http:
         speech = voice_speech(get_settings(), http)
-        return {
-            name: await speech.synthesize(text, speed=1.55 if name == "bot_wait" else 1.0)
-            for name, text in _PROMPTS.items()
-        }
+        prompts = {}
+        for name, text in _PROMPTS.items():
+            speed = 1.55 if name == "bot_wait" else 1.0
+            try:
+                try:
+                    prompts[name] = await speech.synthesize(text, speed=speed)
+                except AiaiAudioError:
+                    prompts[name] = await speech.synthesize(text, speed=speed)
+            except (VoiceError, AiaiError) as error:
+                raise VoiceError(f"{name}: {error}") from None
+        return prompts
 
 
 if __name__ == "__main__":

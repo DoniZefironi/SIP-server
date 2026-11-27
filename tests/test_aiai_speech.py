@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.services import voice_bot
 from app.services.aiai import AiaiError, AiaiSpeech, mono_wav
 from app.services.aiai_recordings import recognize_tracks
 from app.services.voice_bot import voice_speech
@@ -69,3 +70,25 @@ async def test_missing_timestamps_do_not_silently_break_dialogue() -> None:
         speech = AiaiSpeech(http, _settings())
         with pytest.raises(AiaiError, match="таймкоды"):
             await speech.transcribe_recording(mono_wav(b"\x20\x00"), with_phrases=True)
+
+
+@pytest.mark.parametrize(("recover", "first_status"), [(True, 200), (False, 200), (False, 402)])
+async def test_prompt_generation_retries_only_invalid_audio(monkeypatch, recover, first_status):
+    audio = mono_wav(b"\x20\x00" * 800)
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 2 and recover:
+            return httpx.Response(200, content=audio, headers={"Content-Type": "audio/wav"})
+        return httpx.Response(first_status, json={"error": "no audio"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        monkeypatch.setattr(voice_bot, "voice_speech", lambda *args: AiaiSpeech(http, _settings()))
+        monkeypatch.setattr(voice_bot, "_PROMPTS", {"bot_question": "Здравствуйте"})
+        if recover:
+            assert await voice_bot._synthesize_prompts() == {"bot_question": audio}
+        else:
+            with pytest.raises(voice_bot.VoiceError, match="bot_question: AIAI.BY"):
+                await voice_bot._synthesize_prompts()
+    assert calls == ["/v1/audio/speech"] * (2 if first_status == 200 else 1)

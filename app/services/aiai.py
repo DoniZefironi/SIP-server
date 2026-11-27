@@ -17,6 +17,10 @@ class AiaiError(Exception):
         self.retryable = retryable
 
 
+class AiaiAudioError(AiaiError):
+    pass
+
+
 def aiai_connection(settings: Settings) -> tuple[str, dict[str, str]]:
     key = settings.aiai_api_key.get_secret_value().strip()
     if not key:
@@ -77,14 +81,14 @@ def _is_phone_wav(content: bytes) -> bool:
 
 async def _phone_wav(content: bytes, speed: float) -> bytes:
     if not content or len(content) > _MAX_SPEECH_BYTES:
-        raise AiaiError("AIAI.BY вернул некорректный размер аудио")
+        raise AiaiAudioError("AIAI.BY вернул некорректный размер аудио")
     if speed == 1.0 and _is_phone_wav(content):
         return content
+    filters = ("-af", f"atempo={speed}") if speed != 1.0 else ()
     try:
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "pipe",
-            "-i", "pipe:0",
-            "-vn", "-af", f"atempo={speed}", "-t", "125",
+            "-i", "pipe:0", "-vn", *filters, "-t", "125",
             "-f", "s16le", "-ac", "1", "-ar", "8000", "pipe:1",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -101,7 +105,9 @@ async def _phone_wav(content: bytes, speed: float) -> bytes:
                 pass
             await process.communicate()
     if process.returncode or not 0 < len(pcm) < 2_000_000 or len(pcm) % 2:
-        raise AiaiError("AIAI.BY вернул непригодное для звонка аудио")
+        raise AiaiAudioError(
+            f"AIAI.BY вернул непригодное аудио (FFmpeg {process.returncode}, PCM {len(pcm)} байт)"
+        )
     return mono_wav(pcm)
 
 
@@ -161,4 +167,7 @@ class AiaiSpeech:
             "model": self._tts, "input": text, "voice": self._voice,
             "response_format": "mp3",
         })
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type == "application/json" or content_type.startswith("text/"):
+            raise AiaiAudioError("AIAI.BY вернул текст вместо аудио")
         return await _phone_wav(response.content, speed)
